@@ -11,9 +11,15 @@ from threading import Lock
 from ultimate_data_fetcher import UltimateDataFetcher
 from graham_analyzer import GrahamAnalyzer
 from buffett_analyzer import BuffettAnalyzer
+from lynch_analyzer import LynchAnalyzer
+from munger_analyzer import MungerAnalyzer
+from dalio_analyzer import DalioAnalyzer
 from technical_analyzer import TechnicalAnalyzer
 from ai_analyzer import AIAnalyzer
 from report_generator import ReportGenerator
+from market_regime import MarketRegimeAnalyzer
+from stock_screener import StockScreener
+from notification import Notifier
 from logger_config import logger
 from config import SystemConfig, DataConfig
 
@@ -22,9 +28,15 @@ class StockAnalysisSystem:
         self.data_fetcher = UltimateDataFetcher()
         self.graham_analyzer = GrahamAnalyzer()
         self.buffett_analyzer = BuffettAnalyzer()
+        self.lynch_analyzer = LynchAnalyzer()
+        self.munger_analyzer = MungerAnalyzer()
+        self.dalio_analyzer = DalioAnalyzer()
         self.technical_analyzer = TechnicalAnalyzer()
         self.ai_analyzer = AIAnalyzer()
         self.report_generator = ReportGenerator()
+        self.market_regime_analyzer = MarketRegimeAnalyzer()
+        self.notifier = Notifier()
+        self._market_regime = None
         self._max_workers = max_workers or self._calculate_optimal_workers()
         self._results_lock = Lock()
         logger.info(f"股票分析系统初始化完成，最大并发线程数: {self._max_workers}")
@@ -33,44 +45,63 @@ class StockAnalysisSystem:
         cpu_count = os.cpu_count() or 4
         return min(cpu_count, 8)
     
-    def analyze_stock(self, stock_code: str) -> Optional[dict]:
+    def analyze_stock(self, stock_code: str, market_regime: dict = None) -> Optional[dict]:
         try:
             thread_name = threading.current_thread().name
             logger.info(f"[{thread_name}] 开始分析股票: {stock_code}")
-            
+
             stock_data = self.data_fetcher.get_stock_data(stock_code)
             if not stock_data:
                 logger.error(f"无法获取股票 {stock_code} 的数据")
                 return None
-            
+
             graham_result = self.graham_analyzer.analyze(stock_data)
             buffett_result = self.buffett_analyzer.analyze(stock_data)
+            lynch_result = self.lynch_analyzer.analyze(stock_data)
+            munger_result = self.munger_analyzer.analyze(stock_data)
+            dalio_result = self.dalio_analyzer.analyze(stock_data)
             technical_result = self.technical_analyzer.analyze(stock_data)
             ai_result = self.ai_analyzer.analyze(
                 stock_data,
                 graham_result,
                 buffett_result,
+                lynch_result,
+                munger_result,
+                dalio_result,
                 technical_result
             )
-            
+
+            if market_regime is None:
+                if self._market_regime is None:
+                    self._market_regime = self.market_regime_analyzer.analyze()
+                market_regime = self._market_regime
+
             report = self.report_generator.generate_report(
                 stock_data,
                 graham_result,
                 buffett_result,
+                lynch_result,
+                munger_result,
+                dalio_result,
                 technical_result,
-                ai_result
+                ai_result,
+                market_regime
             )
-            
+
             return {
                 'stock_code': stock_code,
                 'stock_data': stock_data,
                 'graham_analysis': graham_result,
                 'buffett_analysis': buffett_result,
+                'lynch_analysis': lynch_result,
+                'munger_analysis': munger_result,
+                'dalio_analysis': dalio_result,
                 'technical_analysis': technical_result,
                 'ai_analysis': ai_result,
+                'market_regime': market_regime,
                 'report_path': report
             }
-            
+
         except Exception as e:
             logger.error(f"分析股票 {stock_code} 时出错: {e}")
             return None
@@ -124,22 +155,76 @@ def main():
     parser.add_argument('--output', '-o', type=str, default='console', choices=['console', 'file'],
                       help='输出方式: console (控制台) 或 file (文件)')
     parser.add_argument('--verbose', '-v', action='store_true', help='详细输出')
-    
+    parser.add_argument('--market', '-m', action='store_true', help='仅显示当前市场环境分析')
+    parser.add_argument('--screen', '-s', action='store_true', help='执行全市场批量筛选')
+    parser.add_argument('--strategy', type=str, default='comprehensive', choices=['graham', 'buffett', 'comprehensive'],
+                      help='筛选策略: graham / buffett / comprehensive (默认)')
+    parser.add_argument('--top-n', type=int, default=50, help='筛选返回前N名，默认50')
+    parser.add_argument('--export-csv', type=str, default=None, help='将筛选结果导出到指定CSV路径')
+    parser.add_argument('--notify', '-n', action='store_true', help='分析完成后推送通知（飞书/邮箱）')
+
     args = parser.parse_args()
-    
+
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-    
+
+    notifier = Notifier()
+
+    if args.market:
+        analyzer = MarketRegimeAnalyzer()
+        regime = analyzer.analyze()
+        print("=" * 80)
+        print("市场环境分析")
+        print("=" * 80)
+        print(f"分析日期: {regime.get('analysis_date', 'N/A')}")
+        print(f"综合判断: {regime.get('composite_regime', '未知')}")
+        print(f"趋势强度: {regime.get('trend_strength', 'N/A')}/100")
+        print(f"波动率状态: {regime.get('volatility_regime', '未知')}")
+        print(f"建议仓位: {regime.get('recommend_position', 'N/A')}%")
+        print(analyzer.get_position_advice(regime))
+        print("-" * 40)
+        for detail in regime.get('details', []):
+            print(detail)
+        if args.notify:
+            notifier.send_market_regime(regime)
+        return
+
+    if args.screen:
+        screener = StockScreener()
+        result = screener.screen(strategy=args.strategy, top_n=args.top_n)
+        print("=" * 80)
+        print(f"全市场筛选结果 (策略: {args.strategy})")
+        print("=" * 80)
+        if not result['success']:
+            print(f"筛选失败: {result.get('error', '未知错误')}")
+            return
+
+        print(f"扫描总数: {result['total_scanned']} 只")
+        print(f"基础过滤后: {result['after_basic_filter']} 只")
+        print(f"返回数量: Top {len(result['stocks'])}")
+        print("-" * 40)
+        print(result['summary'])
+        print("-" * 40)
+        for s in result['stocks'][:20]:
+            print(f"{s['rank']:>3}. {s['stock_name']}({s['stock_code']}) | "
+                  f"评分:{s['total_score']} | PE:{s['pe']} | PB:{s['pb']} | ROE:{s['roe']}% | {s['suggestion']}")
+
+        if args.export_csv:
+            screener.export_to_csv(result, args.export_csv)
+        if args.notify:
+            notifier.send_screener_summary(result)
+        return
+
     system = StockAnalysisSystem()
-    
+
     logger.info(f"开始分析股票: {args.stock_codes}")
     start_time = time.time()
-    
+
     results = system.analyze_stocks(args.stock_codes)
-    
+
     end_time = time.time()
     logger.info(f"分析完成，成功 {len(results)}/{len(args.stock_codes)} 只股票，耗时: {end_time - start_time:.2f} 秒")
-    
+
     for result in results:
         if args.output == 'console':
             print("=" * 80)
@@ -159,6 +244,9 @@ def main():
                 logger.info(f"分析报告已保存到: {result['report_path']}")
             else:
                 logger.error(f"报告生成失败: {result['stock_code']}")
+
+        if args.notify:
+            notifier.send_stock_report(result)
 
 if __name__ == "__main__":
     import sys

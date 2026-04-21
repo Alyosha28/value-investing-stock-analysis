@@ -14,9 +14,11 @@ class AIAnalyzer:
         if not self.api_key:
             logger.warning("未设置 DEEPSEEK_API_KEY，AI 分析将不可用")
     
-    def analyze(self, stock_data: Dict[str, Any], graham_result: Dict[str, Any], buffett_result: Dict[str, Any], technical_result: Dict[str, Any]) -> Dict[str, Any]:
+    def analyze(self, stock_data: Dict[str, Any], graham_result: Dict[str, Any], buffett_result: Dict[str, Any],
+                lynch_result: Dict[str, Any] = None, munger_result: Dict[str, Any] = None,
+                dalio_result: Dict[str, Any] = None, technical_result: Dict[str, Any] = None) -> Dict[str, Any]:
         try:
-            prompt = self._build_prompt(stock_data, graham_result, buffett_result, technical_result)
+            prompt = self._build_prompt(stock_data, graham_result, buffett_result, lynch_result, munger_result, dalio_result, technical_result)
             
             response = self._call_deepseek_api(prompt)
             
@@ -33,7 +35,9 @@ class AIAnalyzer:
             logger.error(f"AI 分析失败: {e}")
             return self._get_default_result()
     
-    def _build_prompt(self, stock_data: Dict[str, Any], graham_result: Dict[str, Any], buffett_result: Dict[str, Any], technical_result: Dict[str, Any]) -> str:
+    def _build_prompt(self, stock_data: Dict[str, Any], graham_result: Dict[str, Any], buffett_result: Dict[str, Any],
+                      lynch_result: Dict[str, Any] = None, munger_result: Dict[str, Any] = None,
+                      dalio_result: Dict[str, Any] = None, technical_result: Dict[str, Any] = None) -> str:
         stock_info = stock_data.get('info', {})
         stock_name = stock_info.get('stock_name', '未知股票')
         stock_code = stock_info.get('stock_code', '未知代码')
@@ -72,7 +76,32 @@ class AIAnalyzer:
             prompt_parts.append(f"安全边际: {buffett_result.get('margin_of_safety', 0)}%")
             prompt_parts.append(f"债务风险: {buffett_result.get('debt_analysis', {}).get('risk_level', '未知')}")
             prompt_parts.append(f"建议: {buffett_result.get('suggestion', '无')}")
-        
+
+        if lynch_result:
+            prompt_parts.append("\n【彼得·林奇分析】")
+            prompt_parts.append(f"PE: {lynch_result.get('pe', 'N/A')}, PEG: {lynch_result.get('peg', 'N/A')}, 增长率: {lynch_result.get('growth_rate', 'N/A')}%")
+            prompt_parts.append(f"公司分类: {lynch_result.get('category', '未知')}")
+            prompt_parts.append(f"消费品属性: {'是' if lynch_result.get('consumer_facing') else '否'}")
+            prompt_parts.append(f"评分: {lynch_result.get('lynch_score', 0)}/100")
+            prompt_parts.append(f"建议: {lynch_result.get('suggestion', '无')}")
+
+        if munger_result:
+            prompt_parts.append("\n【查理·芒格分析】")
+            prompt_parts.append(f"ROE: {munger_result.get('roe', 'N/A')}%, ROIC: {munger_result.get('roic', 'N/A')}%")
+            prompt_parts.append(f"企业质量: {munger_result.get('quality_analysis', {}).get('rating', '未知')}")
+            prompt_parts.append(f"Lollapalooza效应数: {munger_result.get('lollapalooza_score', 0)}")
+            prompt_parts.append(f"评分: {munger_result.get('munger_score', 0)}/100")
+            prompt_parts.append(f"建议: {munger_result.get('suggestion', '无')}")
+
+        if dalio_result:
+            prompt_parts.append("\n【瑞·达里奥分析】")
+            prompt_parts.append(f"债务周期健康度: {dalio_result.get('debt_cycle_analysis', {}).get('rating', '未知')}")
+            prompt_parts.append(f"盈利稳定性: {dalio_result.get('earnings_stability', {}).get('rating', '未知')}")
+            prompt_parts.append(f"通胀对冲: {dalio_result.get('inflation_hedge', {}).get('rating', '弱')}")
+            prompt_parts.append(f"全天候象限: {dalio_result.get('all_weather_quadrant', {}).get('quadrant', '未知')}")
+            prompt_parts.append(f"评分: {dalio_result.get('dalio_score', 0)}/100")
+            prompt_parts.append(f"建议: {dalio_result.get('suggestion', '无')}")
+
         if technical_result:
             latest_signals = technical_result.get('latest_signals', {})
             composite_score = technical_result.get('composite_score', 0)

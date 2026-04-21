@@ -39,6 +39,14 @@ class BuffettThresholds:
     SCORE_BUY = 80
     SCORE_CONSIDER = 60
 
+class MoatConfig:
+    RESOURCE_MOAT_WEIGHT = 5
+    POLICY_MOAT_WEIGHT = 4
+    RESOURCE_MOAT_DESC = '资源壁垒（稀缺资源储量/行业龙头地位）'
+    POLICY_MOAT_DESC = '政策壁垒（国家战略保护/出口管制/关键矿产目录）'
+    STRATEGIC_RESOURCE_KEYWORDS = ['稀土', '锂', '铟', '锗', '镓', '铀', '钨', '锡', '钼', '锑', '锌', '铅', '铜', '金', '银', '铂']
+    STRATEGIC_INDUSTRY_KEYWORDS = ['半导体', '芯片', '新能源', '光伏', '军工', '航天', '国防', '算力', 'AI', '5G']
+
 class DCFConfig:
     DISCOUNT_RATE = 0.09
     TERMINAL_GROWTH_RATE = 0.03
