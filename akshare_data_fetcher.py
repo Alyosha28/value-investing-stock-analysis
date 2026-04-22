@@ -10,6 +10,9 @@ class AkshareDataFetcher:
         self._ak = None
         self._retry_count = SystemConfig.RETRY_MAX
         self._retry_delay = SystemConfig.RETRY_DELAY
+        self._cached_spot_df = None
+        self._cache_timestamp = 0
+        self._cache_ttl = 100  # 缓存5分钟，避免频繁请求接口
         self._init_akshare()
     
     def _init_akshare(self):
@@ -51,8 +54,10 @@ class AkshareDataFetcher:
             'listing_date': None
         }
         
+        # 快速跳过容易失败的接口，避免浪费时间
         try:
-            info_df = self._retry_on_failure(self._ak.stock_individual_info_em, symbol=stock_code)
+            # 只尝试1次，不重试，避免触发反爬
+            info_df = self._ak.stock_individual_info_em(symbol=stock_code)
             if info_df is not None and not info_df.empty:
                 info_dict = dict(zip(info_df['item'], info_df['value']))
                 
@@ -60,24 +65,13 @@ class AkshareDataFetcher:
                 result['float_share'] = safe_float(info_dict.get('流通股'))
                 result['industry'] = info_dict.get('行业')
                 result['listing_date'] = info_dict.get('上市时间')
+                result['dividend_yield'] = safe_float(info_dict.get('股息率') or info_dict.get('股息率(TTM)'))
                 
         except Exception as e:
             logger.warning(f"akshare 个股信息获取失败: {e}")
         
-        try:
-            dividend_df = self._retry_on_failure(self._ak.stock_history_dividend_detail, symbol=stock_code)
-            if dividend_df is not None and not dividend_df.empty:
-                for _, row in dividend_df.iterrows():
-                    if row.get('派息') and row.get('派息', 0) > 0:
-                        current_price = self._get_current_price(stock_code)
-                        if current_price and current_price > 0:
-                            dividend_per_share = row['派息'] / 10
-                            result['dividend_yield'] = round(dividend_per_share / current_price * 100, 2)
-                            logger.info(f"akshare 股息率: {result['dividend_yield']}%")
-                        break
-                        
-        except Exception as e:
-            logger.warning(f"akshare 分红数据获取失败: {e}")
+        # 分红数据也暂时跳过，避免更多接口调用
+        logger.debug(f"跳过分红数据获取，避免接口调用过多")
         
         return result if any(v is not None for v in result.values()) else None
     
@@ -194,38 +188,58 @@ class AkshareDataFetcher:
     def get_realtime_quote(self, stock_code: str) -> Optional[Dict]:
         if not self._ak:
             return None
-        
-        result = {
-            'current_price': None,
-            'total_mv': None,
-            'float_mv': None,
-            'eps': None,
-            'pe': None,
-            'pb': None,
-            'total_share': None,
-            'float_share': None,
-        }
-        
+
+        # 尝试从缓存获取，减少接口调用次数
+        import time
+        now = time.time()
+        if self._cached_spot_df is not None and (now - self._cache_timestamp) < self._cache_ttl:
+            try:
+                row = self._cached_spot_df[self._cached_spot_df['代码'] == stock_code]
+                if not row.empty:
+                    r = row.iloc[0]
+                    result = {
+                        'current_price': safe_float(r.get('最新价')),
+                        'pe': safe_float(r.get('市盈率')),
+                        'pb': safe_float(r.get('市净率')),
+                        'total_mv': safe_float(r.get('总市值')),
+                        'float_mv': safe_float(r.get('流通市值')),
+                        'total_share': safe_float(r.get('总股本')),
+                        'float_share': safe_float(r.get('流通股')),
+                        'eps': None,
+                    }
+                    logger.info(f"akshare(cache)行情 - 价格:{result['current_price']}, PE:{result['pe']}")
+                    return result
+            except Exception as e:
+                logger.debug(f"从缓存获取行情失败: {e}")
+
+        # 优先使用 stock_zh_a_spot_em（带缓存机制）
         try:
-            bs_code = to_sina_code(stock_code)
-            
-            daily_df = self._retry_on_failure(self._ak.stock_zh_a_daily, symbol=bs_code, adjust='qfq')
-            if daily_df is not None and not daily_df.empty:
-                latest = daily_df.iloc[-1]
-                result['current_price'] = safe_float(latest.get('close'))
-                result['float_share'] = safe_float(latest.get('outstanding_share'))
+            df = self._retry_on_failure(self._ak.stock_zh_a_spot_em)
+            if df is not None and not df.empty:
+                # 更新缓存
+                self._cached_spot_df = df
+                self._cache_timestamp = now
                 
-                if result['current_price'] and result['float_share']:
-                    result['float_mv'] = result['current_price'] * result['float_share']
-                    result['total_mv'] = result['float_mv']
-                
-                logger.info(f"akshare(sina)行情 - 价格:{result['current_price']}, "
-                          f"流通股:{result['float_share']}, "
-                          f"流通市值:{result['float_mv']/1e8 if result['float_mv'] else 0:.0f}亿")
-                return result
+                row = df[df['代码'] == stock_code]
+                if not row.empty:
+                    r = row.iloc[0]
+                    result = {
+                        'current_price': safe_float(r.get('最新价')),
+                        'pe': safe_float(r.get('市盈率')),
+                        'pb': safe_float(r.get('市净率')),
+                        'total_mv': safe_float(r.get('总市值')),
+                        'float_mv': safe_float(r.get('流通市值')),
+                        'total_share': safe_float(r.get('总股本')),
+                        'float_share': safe_float(r.get('流通股')),
+                        'eps': None,
+                    }
+                    logger.info(f"akshare(spot_em)行情 - 价格:{result['current_price']}, PE:{result['pe']}")
+                    return result
         except Exception as e:
-            logger.warning(f"akshare(sina)行情获取失败: {e}")
-        
+            logger.warning(f"akshare spot_em 行情获取失败: {e}")
+
+        # 完全跳过 stock_zh_a_spot_em 的重试，避免触发反爬
+        logger.warning(f"spot_em 不可用，跳过该接口")
         return None
     
     def get_historical_data(self, stock_code: str, period: str = '1y') -> Optional[pd.DataFrame]:
@@ -313,16 +327,72 @@ class AkshareDataFetcher:
         if not self._ak:
             return None
         
-        try:
-            quote_df = self._retry_on_failure(self._ak.stock_zh_a_spot_em)
-            if quote_df is not None and not quote_df.empty:
-                stock_row = quote_df[quote_df['代码'] == stock_code]
+        # 优先从缓存获取
+        import time
+        now = time.time()
+        if self._cached_spot_df is not None and (now - self._cache_timestamp) < self._cache_ttl:
+            try:
+                stock_row = self._cached_spot_df[self._cached_spot_df['代码'] == stock_code]
                 if not stock_row.empty:
                     return safe_float(stock_row.iloc[0].get('最新价'))
-        except Exception:
-            pass
+            except Exception:
+                pass
         
+        # 如果没有缓存，就不调用接口了，避免触发反爬
         return None
+
+    def get_stock_data(self, stock_code: str) -> Optional[Dict]:
+        """统一数据获取接口，聚合各类数据"""
+        if not self._ak:
+            return None
+
+        result = {'stock_code': stock_code}
+
+        # 实时行情
+        quote = self.get_realtime_quote(stock_code)
+        if quote:
+            result.update(quote)
+
+        # 扩展信息
+        info = self.get_extended_info(stock_code)
+        if info:
+            result.update(info)
+
+        # 利润表
+        income = self.get_income_data(stock_code)
+        if income:
+            result.update(income)
+
+        # 资产负债表
+        balance = self.get_balance_sheet(stock_code)
+        if balance:
+            result.update(balance)
+
+        # 现金流
+        cashflow = self.get_cashflow_data(stock_code)
+        if cashflow:
+            result.update(cashflow)
+
+        # 历史财务
+        hist = self.get_historical_financials(stock_code)
+        if hist:
+            result.update(hist)
+
+        # 历史行情
+        historical = self.get_historical_data(stock_code)
+        if historical is not None and not historical.empty:
+            result['historical'] = historical
+
+        has_any_data = (
+            result.get('current_price') is not None
+            or result.get('pe') is not None
+            or result.get('pb') is not None
+            or result.get('free_cashflow') is not None
+            or result.get('current_ratio') is not None
+            or result.get('total_share') is not None
+            or result.get('operating_cashflow') is not None
+        )
+        return result if has_any_data else None
 
 if __name__ == '__main__':
     fetcher = AkshareDataFetcher()

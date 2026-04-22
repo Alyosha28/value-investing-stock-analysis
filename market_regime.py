@@ -65,7 +65,7 @@ class MarketRegimeAnalyzer:
         for name, code in self.INDEX_CODES.items():
             try:
                 df = self._ak.index_zh_a_hist(symbol=code, period="daily",
-                                               start_date="20230101", adjust="qfq")
+                                               start_date="20230101")
                 if df is not None and not df.empty:
                     df = df.rename(columns={
                         '日期': 'Date',

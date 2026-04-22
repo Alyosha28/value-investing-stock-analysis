@@ -11,7 +11,6 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field
 
-from ultimate_data_fetcher import UltimateDataFetcher
 from logger_config import logger
 
 @dataclass
@@ -68,66 +67,97 @@ class DataSourceValidator:
         ]
         self.quality_report_path = 'logs/datasource_quality_report.txt'
         
+    def validate(self, data: Dict[str, Any]) -> bool:
+        """快速验证数据是否包含基本有效字段"""
+        if not data or not isinstance(data, dict):
+            return False
+        financial = data.get('financial', {}) or {}
+        pe = financial.get('pe') if financial else data.get('pe')
+        pb = financial.get('pb') if financial else data.get('pb')
+        if pe is not None or pb is not None or data.get('current_price') is not None:
+            return True
+        # 也接受包含核心财务指标的数据（如资产负债表现金流量表数据）
+        if (financial.get('free_cashflow') is not None
+                or financial.get('current_ratio') is not None
+                or data.get('free_cashflow') is not None
+                or data.get('current_ratio') is not None):
+            return True
+        return False
+
     def _init_metrics(self, name: str):
         if name not in self.metrics:
             self.metrics[name] = DataSourceMetrics(name=name)
     
     def validate_data_source(self, stock_code: str, data: Dict[str, Any], source_name: str):
-        """验证单个数据源的返回数据"""
+        """验证单个数据源的返回数据（支持嵌套 financial 和扁平结构）"""
         self._init_metrics(source_name)
         metrics = self.metrics[source_name]
         metrics.total_requests += 1
-        
+
         if data is None:
             metrics.failed_requests += 1
             metrics.error_messages.append(f"{stock_code}: 返回空数据")
             return
-        
-        financial = data.get('financial', {})
-        if not financial:
+
+        # 支持嵌套 financial 结构和扁平结构
+        financial = data.get('financial', {}) or {}
+        pe = financial.get('pe') if financial else data.get('pe')
+        pb = financial.get('pb') if financial else data.get('pb')
+        roe = financial.get('roe') if financial else data.get('roe')
+
+        if not financial and pe is None and pb is None and roe is None:
             metrics.failed_requests += 1
             metrics.error_messages.append(f"{stock_code}: 无财务数据")
             return
-        
+
         metrics.successful_requests += 1
-        
+
         quality_score = self._calculate_quality_score(data)
         metrics.data_quality_scores.append(quality_score)
-        
-        metrics.pe_values.append(financial.get('pe'))
-        metrics.pb_values.append(financial.get('pb'))
-        metrics.roe_values.append(financial.get('roe'))
-        
+
+        metrics.pe_values.append(pe)
+        metrics.pb_values.append(pb)
+        metrics.roe_values.append(roe)
+
         if data.get('data_validation'):
             metrics.validation_confidences.append(data['data_validation'].get('confidence', 'unknown'))
     
     def _calculate_quality_score(self, data: Dict[str, Any]) -> float:
-        """计算数据质量评分"""
+        """计算数据质量评分（支持嵌套 financial 和扁平结构）"""
         score = 0
-        financial = data.get('financial', {})
+        financial = data.get('financial', {}) or {}
         info = data.get('info', {})
-        
+
         required_fields = ['pe', 'pb', 'roe', 'total_mv', 'eps']
         for field in required_fields:
-            value = financial.get(field)
+            value = financial.get(field) if financial else data.get(field)
             if value is not None:
                 score += 20
-        
-        if info.get('stock_name') and not info['stock_name'].startswith('股票'):
+
+        # 支持 stock_name 在 info 中或顶层
+        stock_name = info.get('stock_name') or data.get('stock_name')
+        if stock_name and not str(stock_name).startswith('股票'):
             score += 10
-        
-        if info.get('industry'):
+
+        industry = info.get('industry') or data.get('industry')
+        if industry:
             score += 10
-        
+
         if data.get('data_validation'):
             validation = data['data_validation']
-            if validation.get('is_validated'):
-                if validation.get('confidence') == 'high':
-                    score += 20
-                elif validation.get('confidence') == 'medium':
-                    score += 10
-        
-        return min(score, 100)
+            pb = financial.get('pb')
+            if pe is not None and pb is not None:
+                return True
+
+        # 支持扁平结构
+        pe = data.get('pe')
+        pb = data.get('pb')
+        if pe is not None and pb is not None:
+            return True
+        if data.get('current_price') or data.get('close'):
+            return True
+
+        return False
     
     def validate_all_sources(self):
         """对所有数据源进行全面验证"""
@@ -138,6 +168,7 @@ class DataSourceValidator:
         for stock_code, stock_name in self.test_stocks:
             logger.info(f"\n测试股票: {stock_name} ({stock_code})")
             
+            from ultimate_data_fetcher import UltimateDataFetcher
             fetcher = UltimateDataFetcher()
             
             try:

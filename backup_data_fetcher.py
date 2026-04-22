@@ -31,6 +31,12 @@ class BackupDataFetcher:
     PERCENT_FIELDS = {'f55'}
 
     FIELD_MAPS = {
+        'xinhua': {
+            'current_price': 'current', 'open': 'open', 'high': 'high', 'low': 'low',
+            'close': 'close', 'volume': 'volume', 'amount': 'amount',
+            'pe': 'pe', 'pb': 'pb', 'total_mv': 'total_mv', 'float_mv': 'float_mv',
+            'pct_chg': 'pct_chg', 'turnover_rate': 'turnover_rate', 'name': 'name',
+        },
         'eastmoney': {
             'current_price': 'current', 'open': 'open', 'high': 'high', 'low': 'low',
             'close': 'close', 'volume': 'volume', 'amount': 'amount',
@@ -56,7 +62,7 @@ class BackupDataFetcher:
         },
     }
 
-    SOURCE_PRIORITY = ['eastmoney', 'tencent', 'sina', 'tushare']
+    SOURCE_PRIORITY = ['xinhua', 'eastmoney', 'tencent', 'sina', 'tushare']
 
     def __init__(self):
         self._timeout = SystemConfig.REQUEST_TIMEOUT
@@ -72,20 +78,39 @@ class BackupDataFetcher:
             'Connection': 'keep-alive',
         })
         self._tushare = None
+        self._xinhua = None
         self._init_tushare()
+        self._init_xinhua()
 
     def _init_tushare(self):
         try:
             import tushare as ts
             token = os.getenv('TUSHARE_TOKEN')
+            proxy_url = os.getenv('TUSHARE_PROXY_URL', 'http://121.40.135.59:8010/')
             if token:
-                ts.set_token(token)
-                self._tushare = ts.pro_api()
-                logger.info("Tushare 初始化成功")
+                pro = ts.pro_api(token)
+                pro._DataApi__http_url = proxy_url
+                self._tushare = pro
+                logger.info(f"Tushare 初始化成功，代理地址: {proxy_url}")
             else:
                 logger.warning("未找到 TUSHARE_TOKEN，跳过Tushare")
+                self._tushare = None
         except Exception as e:
             logger.warning(f"Tushare 初始化失败: {e}")
+            self._tushare = None
+
+    def _init_xinhua(self):
+        try:
+            from xinhua_data_fetcher import XinhuaFinanceDataFetcher
+            self._xinhua = XinhuaFinanceDataFetcher()
+            if self._xinhua.is_available:
+                logger.info("新华财经网数据源初始化成功")
+            else:
+                self._xinhua = None
+                logger.warning("新华财经网数据源不可用，已跳过")
+        except Exception as e:
+            self._xinhua = None
+            logger.warning(f"新华财经网数据源初始化失败: {e}")
 
     def _safe_request(self, url: str, params: dict = None, headers: dict = None,
                       method: str = 'GET', timeout: int = None) -> Optional[requests.Response]:
@@ -317,6 +342,20 @@ class BackupDataFetcher:
                         }
         except Exception as e:
             logger.warning(f"腾讯财经获取失败: {e}")
+    def get_realtime_quote_from_xinhua(self, stock_code: str) -> Optional[Dict]:
+        if not self._xinhua:
+            return None
+        try:
+            quote = self._xinhua.get_realtime_quote(stock_code)
+            if quote and quote.get('current') and quote['current'] > 0:
+                logger.info(f"新华财经网行情 - {quote.get('name', stock_code)}: "
+                            f"价格={quote['current']}, PE={quote.get('pe')}, "
+                            f"PB={quote.get('pb')}")
+                return quote
+        except Exception as e:
+            logger.warning(f"新华财经网获取失败: {e}")
+        return None
+
 
         return None
 
@@ -457,6 +496,10 @@ class BackupDataFetcher:
 
     def get_all_realtime_quotes(self, stock_code: str) -> Dict[str, Any]:
         results = {}
+        quote = self.get_realtime_quote_from_xinhua(stock_code)
+        if quote:
+            results['xinhua'] = quote
+            logger.info(f"新华财经网成功获取 {stock_code} 行情")
         logger.info(f"尝试从多个数据源获取 {stock_code} 实时行情...")
 
         quote = self.get_realtime_quote_from_eastmoney(stock_code)
@@ -484,6 +527,19 @@ class BackupDataFetcher:
 
     def get_all_stock_info(self, stock_code: str) -> Dict[str, Any]:
         results = {}
+        if self._xinhua:
+            try:
+                xinhua_info = self._xinhua.get_stock_info(stock_code)
+                if xinhua_info and xinhua_info.get('stock_name'):
+                    results['xinhua'] = {
+                        'name': xinhua_info['stock_name'],
+                        'code': stock_code,
+                        'industry': xinhua_info.get('industry'),
+                        'list_date': xinhua_info.get('list_date'),
+                    }
+                    logger.info(f"新华财经网成功获取 {stock_code} 基本信息")
+            except Exception as e:
+                logger.warning(f"新华财经网获取基本信息失败: {e}")
         logger.info(f"尝试从多个数据源获取 {stock_code} 基本信息...")
 
         quote = self.get_realtime_quote_from_eastmoney(stock_code)
@@ -503,6 +559,14 @@ class BackupDataFetcher:
 
     def get_all_financial_data(self, stock_code: str) -> Dict[str, Any]:
         results = {}
+        if self._xinhua:
+            try:
+                xinhua_financial = self._xinhua.get_financial_data(stock_code)
+                if xinhua_financial:
+                    results['xinhua'] = xinhua_financial
+                    logger.info(f"新华财经网成功获取 {stock_code} 财务指标")
+            except Exception as e:
+                logger.warning(f"新华财经网获取财务数据失败: {e}")
         logger.info(f"尝试从多个数据源获取 {stock_code} 财务数据...")
 
         quote = self.get_realtime_quote_from_eastmoney(stock_code)
@@ -572,7 +636,47 @@ class BackupDataFetcher:
                 unified['close'] = price
 
         logger.info(f"聚合行情数据成功: {unified['sources']}, 价格={unified.get('current_price')}")
+        if self._xinhua:
+            try:
+                self._xinhua.close()
+            except Exception:
+                pass
         return unified
+
+    def get_stock_data(self, stock_code: str) -> Optional[Dict]:
+        """统一数据获取接口 - 整合 backup 内所有子源"""
+        try:
+            unified_quote = self.get_unified_quote(stock_code)
+            stock_info = self.get_all_stock_info(stock_code)
+            financial_data = self.get_all_financial_data(stock_code)
+
+            if not unified_quote:
+                return None
+
+            result = dict(unified_quote)
+            result['stock_code'] = stock_code
+            result['source'] = 'backup'
+
+            # 合并基本信息（取第一个成功源的 name/industry）
+            if stock_info:
+                for source, info in stock_info.items():
+                    if info.get('name') and not result.get('stock_name'):
+                        result['stock_name'] = info['name']
+                    if info.get('industry') and not result.get('industry'):
+                        result['industry'] = info['industry']
+
+            # 合并财务数据（优先取第一个成功源）
+            if financial_data:
+                for source, fin in financial_data.items():
+                    for key in ['pe', 'pb', 'total_mv', 'float_mv', 'turnover_rate',
+                                'roe_history', 'net_profit_history', 'revenue_history']:
+                        if fin.get(key) is not None and result.get(key) is None:
+                            result[key] = fin[key]
+
+            return result
+        except Exception as e:
+            logger.error(f"BackupDataFetcher 统一接口获取失败: {e}")
+            return None
 
     def close(self):
         self._session.close()

@@ -21,8 +21,9 @@ if sys.platform == 'win32':
             break
 
 class ReportGenerator:
-    def __init__(self):
+    def __init__(self, market_regime_analyzer=None):
         self.output_dir = SystemConfig.OUTPUT_DIR
+        self.market_regime_analyzer = market_regime_analyzer
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
     
@@ -85,11 +86,213 @@ class ReportGenerator:
         self._append_technical_analysis(report, technical_result, safe_format)
         self._append_ai_analysis(report, ai_result)
 
-        report.append("\n## 11. 总结")
+        report.append("\n## 11. 投资总结")
         report.append("=" * 80)
+        
+        summary_parts = self._generate_comprehensive_summary(
+            stock_name, stock_code, stock_data,
+            graham_result, buffett_result, lynch_result, munger_result, dalio_result,
+            technical_result, ai_result, market_regime
+        )
+        
+        report.append("\n### 核心结论")
+        for part in summary_parts['conclusions']:
+            report.append(f"- {part}")
+        
+        report.append("\n### 投资评分汇总")
+        report.append(f"- 格雷厄姆评分: {safe_format(graham_result.get('graham_score') if graham_result else 0)}/100 - {graham_result.get('suggestion', '无') if graham_result else '无数据'}")
+        report.append(f"- 巴菲特评分: {safe_format(buffett_result.get('buffett_score') if buffett_result else 0)}/100 - {buffett_result.get('suggestion', '无') if buffett_result else '无数据'}")
+        report.append(f"- 彼得·林奇评分: {safe_format(lynch_result.get('lynch_score') if lynch_result else 0)}/100 - {lynch_result.get('suggestion', '无') if lynch_result else '无数据'}")
+        report.append(f"- 查理·芒格评分: {safe_format(munger_result.get('munger_score') if munger_result else 0)}/100 - {munger_result.get('suggestion', '无') if munger_result else '无数据'}")
+        report.append(f"- 瑞·达里奥评分: {safe_format(dalio_result.get('dalio_score') if dalio_result else 0)}/100 - {dalio_result.get('suggestion', '无') if dalio_result else '无数据'}")
+        report.append(f"- 技术分析评分: {safe_format(technical_result.get('composite_score') if technical_result else 0)}/100")
+        
+        if summary_parts.get('scores'):
+            avg_score = sum(summary_parts['scores']) / len(summary_parts['scores'])
+            report.append(f"- 综合平均评分: {avg_score:.1f}/100")
+        
+        report.append("\n### 关键优势")
+        for advantage in summary_parts['advantages']:
+            report.append(f"- {advantage}")
+        
+        report.append("\n### 主要风险")
+        for risk in summary_parts['risks']:
+            report.append(f"- {risk}")
+        
+        report.append("\n### 估值分析")
+        financial = stock_data.get('financial', {})
+        pe = financial.get('pe')
+        pb = financial.get('pb')
+        roe = financial.get('roe')
+        current_price = financial.get('current_price')
+        intrinsic_values = []
+        if graham_result and graham_result.get('intrinsic_value'):
+            intrinsic_values.append(('格雷厄姆', graham_result['intrinsic_value']))
+        if buffett_result and buffett_result.get('intrinsic_value'):
+            intrinsic_values.append(('DCF', buffett_result['intrinsic_value']))
+        
+        if intrinsic_values:
+            report.append("内在价值估算:")
+            for method, value in intrinsic_values:
+                if current_price and value:
+                    premium = ((current_price - value) / value * 100) if value > 0 else 0
+                    status = "高估" if premium > 20 else ("低估" if premium < -20 else "合理")
+                    report.append(f"  - {method}: {value:.2f}元 (当前价:{current_price:.2f}元, {status}, {'+' if premium > 0 else ''}{premium:.1f}%)")
+        
+        report.append("\n### 市场环境参考")
+        if market_regime:
+            regime = market_regime.get('composite_regime', '未知')
+            position = market_regime.get('recommend_position', 50)
+            advice = ''
+            if getattr(self, 'market_regime_analyzer', None) and market_regime:
+                advice = self.market_regime_analyzer.get_position_advice(market_regime)
+            report.append(f"- 市场阶段: {regime}")
+            report.append(f"- 建议仓位: {position}%")
+            if advice:
+                report.append(f"- 仓位建议: {advice}")
+        
+        report.append("\n### 投资建议")
+        report.append(summary_parts.get('final_recommendation', '综合各投资大师的分析，建议投资者谨慎评估后做出决策。'))
+        
+        report.append("\n" + "=" * 80)
         report.append("免责声明：本报告仅供参考，不构成投资建议。投资有风险，入市需谨慎。")
         
         return '\n'.join(report)
+    
+    def _generate_comprehensive_summary(self, stock_name: str, stock_code: str, stock_data: Dict[str, Any],
+                                       graham_result: Dict[str, Any], buffett_result: Dict[str, Any],
+                                       lynch_result: Dict[str, Any], munger_result: Dict[str, Any],
+                                       dalio_result: Dict[str, Any], technical_result: Dict[str, Any],
+                                       ai_result: Dict[str, Any], market_regime: Dict[str, Any] = None) -> Dict[str, Any]:
+        
+        conclusions = []
+        advantages = []
+        risks = []
+        scores = []
+        recommendation = ""
+        
+        financial = stock_data.get('financial', {})
+        pe = financial.get('pe')
+        pb = financial.get('pb')
+        roe = financial.get('roe')
+        current_price = financial.get('current_price')
+        
+        if graham_result:
+            graham_score = graham_result.get('graham_score', 0)
+            scores.append(graham_score)
+            if graham_score >= 70:
+                conclusions.append(f"格雷厄姆价值投资：高度符合标准（{graham_score}/100），安全边际充足")
+            elif graham_score >= 50:
+                conclusions.append(f"格雷厄姆价值投资：基本符合标准（{graham_score}/100），有一定投资价值")
+            elif graham_score > 0:
+                conclusions.append(f"格雷厄姆价值投资：不推荐（{graham_score}/100），不符合价值投资标准")
+        
+        if buffett_result:
+            buffett_score = buffett_result.get('buffett_score', 0)
+            scores.append(buffett_score)
+            moat = buffett_result.get('moat_rating', '无')
+            if moat != '无':
+                advantages.append(f"拥有{moat}，企业竞争优势明显")
+            fcf = buffett_result.get('free_cashflow')
+            if fcf and fcf > 0:
+                advantages.append("自由现金流为正，利润质量较高")
+            if buffett_score >= 70:
+                conclusions.append(f"巴菲特价值投资：优质企业（{buffett_score}/100），建议买入")
+            elif buffett_score >= 50:
+                conclusions.append(f"巴菲特价值投资：良好企业（{buffett_score}/100），可适当关注")
+        
+        if munger_result:
+            munger_score = munger_result.get('munger_score', 0)
+            scores.append(munger_score)
+            lollapalooza = munger_result.get('lollapalooza_score', 0)
+            if lollapalooza >= 3:
+                advantages.append(f"具备{lollapalooza}个Lollapalooza效应因素，长期投资价值突出")
+            quality_rating = munger_result.get('quality_analysis', {}).get('rating', '未知')
+            if quality_rating in ['优秀', '良好']:
+                advantages.append(f"查理·芒格企业质量评级：{quality_rating}")
+        
+        if dalio_result:
+            dalio_score = dalio_result.get('dalio_score', 0)
+            scores.append(dalio_score)
+            quadrant = dalio_result.get('all_weather_quadrant', {}).get('quadrant', '未知')
+            if quadrant != '未知':
+                advantages.append(f"适合{quadrant}环境，具有一定的风险对冲价值")
+        
+        if lynch_result:
+            lynch_score = lynch_result.get('lynch_score', 0)
+            scores.append(lynch_score)
+            category = lynch_result.get('category', '未知')
+            if category == '周期型':
+                risks.append("公司属于周期型行业，盈利波动较大，需关注行业周期")
+        
+        if technical_result:
+            tech_score = technical_result.get('composite_score', 0)
+            scores.append(tech_score)
+            signal = technical_result.get('signal_strength', '无法评估')
+            regime = technical_result.get('market_regime', 'unknown')
+            if signal == '建议买入':
+                advantages.append("技术面显示买入信号，趋势向好")
+            elif signal == '建议卖出':
+                risks.append("技术面显示卖出信号，短期可能承压")
+            
+            latest_signals = technical_result.get('latest_signals', {})
+            sell_signals = 0
+            if latest_signals:
+                if latest_signals.get('rsi_signal') == -1: sell_signals += 1
+                if latest_signals.get('bb_signal') == -1: sell_signals += 1
+                if latest_signals.get('ma_signal') == -1: sell_signals += 1
+                if latest_signals.get('macd_signal') == -1: sell_signals += 1
+            if sell_signals >= 3:
+                risks.append(f"多个技术指标发出卖出信号（{sell_signals}/4），短期风险较大")
+        
+        if pe and pe > 0:
+            if pe > 30:
+                risks.append(f"市盈率偏高（PE={pe:.1f}），估值较高")
+            elif pe < 15:
+                advantages.append(f"市盈率较低（PE={pe:.1f}），估值有吸引力")
+        
+        if pb and pb > 0:
+            if pb > 5:
+                risks.append(f"市净率偏高（PB={pb:.1f}），资产重")
+        
+        if roe and roe > 0:
+            if roe > 20:
+                advantages.append(f"净资产收益率优秀（ROE={roe:.1f}%），盈利能力强劲")
+            elif roe > 15:
+                advantages.append(f"净资产收益率良好（ROE={roe:.1f}%），盈利能力较好")
+        
+        debt_to_equity = financial.get('debt_to_equity')
+        if debt_to_equity is not None and debt_to_equity >= 1:
+            risks.append(f"债务权益比较高（D/E={debt_to_equity:.2f}），财务风险较大")
+        elif debt_to_equity is not None and debt_to_equity < 0.5:
+            advantages.append(f"债务权益比较低（D/E={debt_to_equity:.2f}），财务状况稳健")
+        
+        if not advantages:
+            advantages.append("基本面数据一般，需要更多时间观察")
+        if not risks:
+            risks.append("需关注市场波动风险和行业周期性")
+        
+        avg_score = sum(scores) / len(scores) if scores else 50
+        
+        if avg_score >= 70:
+            recommendation = f"综合评分{avg_score:.1f}/100，建议买入。{stock_name}（{stock_code}）基本面良好，多位投资大师评分较高，具有一定的投资价值。建议结合自身风险偏好和仓位管理，适度配置。"
+        elif avg_score >= 55:
+            recommendation = f"综合评分{avg_score:.1f}/100，建议关注。{stock_name}（{stock_code}）具备一定投资价值，但需注意估值和风险控制。建议在合理价位介入，并做好止损准备。"
+        elif avg_score >= 40:
+            recommendation = f"综合评分{avg_score:.1f}/100，建议观望。{stock_name}（{stock_code}）投资价值一般，存在较多不确定因素。建议等待更好的买入机会。"
+        else:
+            recommendation = f"综合评分{avg_score:.1f}/100，建议回避。{stock_name}（{stock_code}）目前不符合价值投资标准，风险大于机会。建议谨慎对待。"
+        
+        if not conclusions:
+            conclusions.append("各投资大师分析结果不一致，需结合自身判断")
+        
+        return {
+            'conclusions': conclusions,
+            'advantages': advantages[:5],
+            'risks': risks[:5],
+            'scores': scores,
+            'final_recommendation': recommendation
+        }
     
     def _append_market_regime(self, report: list, market_regime: Dict[str, Any]):
         report.append("\n## 1. 市场环境")
@@ -127,10 +330,10 @@ class ReportGenerator:
         report.append("\n## 2. 股票基本信息")
         info = stock_data.get('info', {})
         financial = stock_data.get('financial', {})
-        report.append(f"- 股票名称: {info.get('stock_name', '未知')}")
-        report.append(f"- 股票代码: {info.get('stock_code', '未知')}")
-        report.append(f"- 所属行业: {info.get('industry', '未知')}")
-        report.append(f"- 上市日期: {info.get('list_date', '未知')}")
+        report.append(f"- 股票名称: {info.get('stock_name') or '未知'}")
+        report.append(f"- 股票代码: {info.get('stock_code') or '未知'}")
+        report.append(f"- 所属行业: {info.get('industry') or '未知'}")
+        report.append(f"- 上市日期: {info.get('list_date') or '未知'}")
         
         total_share = info.get('total_share') or financial.get('total_share')
         float_share = info.get('float_share') or financial.get('float_share')
