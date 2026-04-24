@@ -170,27 +170,42 @@ class DataSourceConfig:
     AKSHARE_REQUEST_INTERVAL = float(os.getenv('AKSHARE_REQUEST_INTERVAL', '0.5'))
 
     TUSHARE_TOKEN = os.getenv('TUSHARE_TOKEN')
-    TUSHARE_PROXY_URL = os.getenv('TUSHARE_PROXY_URL', 'http://121.40.135.59:8010/')
+    TUSHARE_PROXY_URL = os.getenv('TUSHARE_PROXY_URL', 'http://118.89.66.41:8010/')
 
     @classmethod
     def get_source_priority(cls) -> List[str]:
+        """返回数据源优先级列表。
+        
+        执行顺序约束：tushare 必须在 akshare 之前。
+        原因：tushare 提供更完整的财务数据，akshare 作为补充源；
+        两者同时请求可能造成资源竞争和接口限流。
+        """
         priority = []
         if cls.XINHUA_ENABLED:
             priority.append('xinhua')
-        # 2. backup 聚合源（内部已调整为腾讯财经优先）
         if cls.BACKUP_ENABLED:
             priority.append('backup')
-        # 3. Tushare Pro（财务数据完整，需 token）
         if cls.TUSHARE_ENABLED:
             priority.append('tushare')
-        # 4. akshare（备用）
         if cls.AKSHARE_ENABLED:
             priority.append('akshare')
         if cls.TICKFLOW_ENABLED:
             priority.append('tickflow')
         if cls.TAVILY_ENABLED:
             priority.append('tavily')
+        priority = cls._enforce_source_order(priority)
         return priority
+
+    @classmethod
+    def _enforce_source_order(cls, sources: List[str]) -> List[str]:
+        """确保数据源顺序满足依赖约束：akshare 必须在 tushare 之后。"""
+        if 'akshare' in sources and 'tushare' in sources:
+            ak_idx = sources.index('akshare')
+            ts_idx = sources.index('tushare')
+            if ak_idx < ts_idx:
+                sources.remove('tushare')
+                sources.insert(ak_idx, 'tushare')
+        return sources
 
     @classmethod
     def is_source_available(cls, source: str) -> bool:

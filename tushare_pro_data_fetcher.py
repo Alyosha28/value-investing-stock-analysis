@@ -23,7 +23,7 @@ class TushareProDataFetcher:
             import tushare as ts
             self._ts = ts
             token = os.getenv('TUSHARE_TOKEN')
-            proxy_url = os.getenv('TUSHARE_PROXY_URL', 'http://121.40.135.59:8010/')
+            proxy_url = os.getenv('TUSHARE_PROXY_URL', 'http://118.89.66.41:8010/')
             if token:
                 ts.set_token(token)
                 self._pro = ts.pro_api()

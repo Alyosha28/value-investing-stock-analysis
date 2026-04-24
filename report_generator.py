@@ -54,6 +54,360 @@ class ReportGenerator:
             logger.error(f"生成报告失败: {e}")
             return None
     
+    def generate_position_report(self, stock_data: Dict[str, Any],
+                                 cost_price: float,
+                                 graham_result: Dict[str, Any],
+                                 buffett_result: Dict[str, Any],
+                                 lynch_result: Dict[str, Any],
+                                 munger_result: Dict[str, Any],
+                                 dalio_result: Dict[str, Any],
+                                 technical_result: Dict[str, Any],
+                                 market_regime: Dict[str, Any] = None,
+                                 risk_result: Dict[str, Any] = None) -> str:
+        try:
+            stock_info = stock_data.get('info', {})
+            stock_name = stock_info.get('stock_name', '未知股票')
+            stock_code = stock_info.get('stock_code', '未知代码')
+            financial = stock_data.get('financial', {})
+            current_price = financial.get('current_price', 0) or 0
+
+            pnl_pct = ((current_price - cost_price) / cost_price * 100) if cost_price > 0 and current_price > 0 else 0
+            pnl_status = '✅' if pnl_pct >= 0 else '🔴'
+
+            report = []
+            report.append(f"# {stock_code} {stock_name} — 持仓分析报告")
+            report.append(f"> 分析时间：{pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            report.append(f"> 您的成本价：**{cost_price:.3f} 元**")
+            report.append(f"> 当前市价：**{current_price:.2f} 元**" if current_price else "> 当前市价：数据缺失")
+            report.append(f"> 持仓盈亏：**{pnl_pct:+.2f}%** {pnl_status}")
+            report.append("")
+            report.append("---")
+
+            def sf(value, fmt=''):
+                if value is None:
+                    return 'N/A'
+                if fmt:
+                    try:
+                        return f"{value:{fmt}}"
+                    except Exception:
+                        return str(value)
+                return str(value)
+
+            self._append_position_decision_signal(report, graham_result, buffett_result, lynch_result, munger_result, dalio_result, technical_result, market_regime, risk_result, sf)
+            self._append_position_technical(report, technical_result, cost_price, current_price, sf)
+            self._append_position_all_masters(report, stock_data, graham_result, buffett_result, lynch_result, munger_result, dalio_result, current_price, sf)
+            self._append_position_decision(report, technical_result, current_price, cost_price, sf)
+            self._append_position_risks(report, graham_result, buffett_result, lynch_result, munger_result, dalio_result, technical_result)
+
+            report.append("")
+            report.append("---")
+            report.append("*⚠️ 免责声明：本报告基于量化分析模型自动生成，仅供参考，不构成投资建议。*")
+
+            content = '\n'.join(report)
+            report_path = os.path.join(self.output_dir, f'{stock_code}_持仓分析.md')
+            with open(report_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            logger.info(f"持仓分析报告生成完成: {report_path}")
+            return report_path
+
+        except Exception as e:
+            logger.error(f"生成持仓报告失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def _append_position_decision_signal(self, report, graham, buffett, lynch, munger, dalio, technical, market_regime, risk_result, sf):
+        report.append("## 一、综合决策信号")
+        report.append("")
+        g_score = graham.get('graham_score', 0) if graham else 0
+        b_score = buffett.get('buffett_score', 0) if buffett else 0
+        l_score = lynch.get('lynch_score', 0) if lynch else 0
+        m_score = munger.get('munger_score', 0) if munger else 0
+        d_score = dalio.get('dalio_score', 0) if dalio else 0
+        avg_fund = sum(s for s in [g_score, b_score, l_score, m_score, d_score] if s and s > 0)
+        count_fund = sum(1 for s in [g_score, b_score, l_score, m_score, d_score] if s and s > 0)
+        avg_fund = round(avg_fund / count_fund, 1) if count_fund else 0
+
+        t_score = technical.get('composite_score', 0) if technical else 0
+        t_signal = '🟢 建议买入' if t_score >= 70 else ('🟡 观望' if t_score >= 50 else '🔴 偏空')
+        f_signal = '🟢 偏多' if avg_fund >= 55 else ('🔴 偏空' if avg_fund < 40 else '🟡 中性')
+
+        risk_level = '低风险' if risk_result and risk_result.get('risk_score', 0) < 30 else '中等风险'
+        macro_pos = market_regime.get('recommend_position', 50) if market_regime else 50
+
+        report.append(f"| 维度 | 得分 | 信号 |")
+        report.append(f"|------|------|------|")
+        report.append(f"| **技术面** | **{t_score:.1f} / 100** | {t_signal} |")
+        report.append(f"| **基本面** | **{avg_fund} / 100** | {f_signal} — Graham {g_score}/Buffett {b_score}/Lynch {l_score}/Munger {m_score}/Dalio {d_score} |")
+        report.append(f"| **宏观环境** | 建议仓位 {macro_pos}% | {'🟢 偏多' if macro_pos >= 60 else ('🔴 偏空' if macro_pos <= 30 else '🟡 中性')} |")
+        if risk_result:
+            report.append(f"| **风险等级** | {risk_level}({risk_result.get('risk_score', 0)}分) | 最大仓位 {risk_result.get('max_position_pct', 20)}%，止损 {risk_result.get('stop_loss_pct', 8)}% |")
+
+        positive = sum(1 for s in [t_score >= 55, avg_fund >= 40])
+        report.append("")
+        report.append(f"**投票共识：{positive}:{3 - positive} {'偏多' if positive >= 2 else '偏空'}** → **{'建议持有' if positive >= 2 else '建议观望/减仓'}**")
+        report.append("")
+
+    def _append_position_technical(self, report, technical, cost_price, current_price, sf):
+        report.append("---")
+        report.append("")
+        report.append("## 二、核心技术指标")
+        if not technical:
+            report.append("- 无技术分析数据")
+            report.append("")
+            return
+
+        dims = technical.get('dimension_scores', {})
+        report.append("| 维度 | 得分 | 说明 |")
+        report.append("|------|------|------|")
+        dim_names = {
+            'trend': ('趋势强度', 'ADX/均线'),
+            'momentum': ('动量指标', 'RSI/MACD'),
+            'volatility': ('波动率', 'ATR/布林带'),
+            'volume': ('量价配合', 'OBV/成交量'),
+            'support_resistance': ('支撑阻力', '布林带位置'),
+            'relative_strength': ('相对强度', '20/60日变动率'),
+        }
+        for key, (name, desc) in dim_names.items():
+            val = dims.get(key, 0)
+            report.append(f"| {name} | **{round(val)}** | {desc} |")
+
+        sr = technical.get('support_resistance', {})
+        report.append("")
+        report.append("### 关键价位")
+        report.append("")
+        report.append("```")
+        r2 = sr.get('resistance_2')
+        r1 = sr.get('resistance_1')
+        pivot = sr.get('pivot')
+        s1 = sr.get('support_1')
+        s2 = sr.get('support_2')
+        if r2:
+            report.append(f"阻力 2:  {r2:.2f}  ────")
+        if r1:
+            report.append(f"阻力 1:  {r1:.2f}  ──── {'⚡ 逼近阻力！' if current_price and r1 and current_price >= r1 * 0.97 else ''}")
+        if current_price:
+            report.append(f"当前价:  {current_price:.2f}  ●{'  （成本: ' + str(cost_price) + '）' if cost_price else ''}")
+        if pivot:
+            report.append(f"枢纽点:  {pivot:.2f}  ──── 多空分水岭")
+        if s1:
+            report.append(f"支撑 1:  {s1:.2f}  ────")
+        if s2:
+            report.append(f"支撑 2:  {s2:.2f}  ────")
+        report.append("```")
+        report.append("")
+
+    def _append_position_all_masters(self, report, stock_data, graham, buffett, lynch, munger, dalio, current_price, sf):
+        report.append("---")
+        report.append("")
+        report.append("## 三、五大投资大师基本面分析")
+        report.append("")
+        report.append("### 3.1 综合评分总览")
+        report.append("")
+        g_score = graham.get('graham_score', 0) if graham else 0
+        b_score = buffett.get('buffett_score', 0) if buffett else 0
+        l_score = lynch.get('lynch_score', 0) if lynch else 0
+        m_score = munger.get('munger_score', 0) if munger else 0
+        d_score = dalio.get('dalio_score', 0) if dalio else 0
+        financial = stock_data.get('financial', {})
+
+        report.append("| 投资大师 | 评分 | 信号 | 核心判断 |")
+        report.append("|----------|------|------|----------|")
+
+        for name, score, sig, verdict in [
+            ('格雷厄姆 (价值)', g_score, '🔴' if g_score < 50 else '🟢', f"内在价值 {sf(graham.get('intrinsic_value'))} 元" if graham else 'N/A'),
+            ('巴菲特 (护城河)', b_score, '🔴' if b_score < 50 else '🟢', f"护城河: {buffett.get('moat_rating', 'N/A')}" if buffett else 'N/A'),
+            ('彼得·林奇 (成长)', l_score, '🔴' if l_score < 50 else '🟢', f"PEG: {sf(lynch.get('peg_ratio', 'N/A'))}" if lynch else 'N/A'),
+            ('查理·芒格 (质量)', m_score, '🟢' if m_score >= 50 else '🔴', f"质量: {munger.get('quality_analysis', {}).get('rating', 'N/A')}" if munger else 'N/A'),
+            ('瑞·达里奥 (宏观)', d_score, '🟡' if d_score < 60 else '🟢', f"象限: {dalio.get('all_weather_quadrant', {}).get('quadrant', 'N/A')}" if dalio else 'N/A'),
+        ]:
+            report.append(f"| **{name}** | **{score} / 100** | {sig} {'偏空' if score < 50 else '偏多'} | {verdict} |")
+
+        valid_scores = [s for s in [g_score, b_score, l_score, m_score, d_score] if s and s > 0]
+        avg_fund = round(sum(valid_scores) / len(valid_scores), 1) if valid_scores else 0
+        report.append("")
+        report.append(f"**综合基本面评分：{avg_fund} / 100**")
+        report.append("")
+        report.append("---")
+
+        self._append_position_graham(report, graham, current_price, sf)
+        self._append_position_buffett(report, buffett, current_price, sf, financial)
+        self._append_position_lynch(report, lynch, current_price, sf)
+        self._append_position_munger(report, munger, sf)
+        self._append_position_dalio(report, dalio, sf, financial)
+
+    def _append_position_graham(self, report, graham, current_price, sf):
+        report.append("")
+        report.append("### 3.2 本杰明·格雷厄姆 — 价值投资分析 🔴")
+        report.append("")
+        if not graham:
+            report.append("- 无数据")
+            return
+        report.append("| 指标 | 数值 | 判断 |")
+        report.append("|------|------|------|")
+        report.append(f"| PE（市盈率） | **{sf(graham.get('pe'))}** | {'远超标准' if (graham.get('pe') or 999) > 15 else '尚可'} |")
+        report.append(f"| 内在价值（格雷厄姆公式） | **{sf(graham.get('intrinsic_value'))} 元** | 当前价 {current_price:.2f} 的 {sf(round(graham.get('intrinsic_value', 0) / current_price * 100, 1) if current_price else 'N/A')}% |")
+        margin = graham.get('margin_of_safety')
+        report.append(f"| 安全边际 | **{sf(margin)}%** | {'不具备安全边际' if (margin is not None and margin < 0) else '具备安全边际'} |")
+        report.append(f"| Graham 评分 | **{graham.get('graham_score', 0)} / 100** | {'严重高估' if graham.get('graham_score', 0) < 40 else '可关注'} |")
+
+    def _append_position_buffett(self, report, buffett, current_price, sf, financial):
+        report.append("")
+        report.append("### 3.3 沃伦·巴菲特 — 护城河与 DCF 估值 🔴")
+        report.append("")
+        if not buffett:
+            report.append("- 无数据")
+            return
+        report.append("#### 护城河评估")
+        report.append("")
+        report.append(f"| 护城河评级 | **{buffett.get('moat_rating', 'N/A')}** |")
+        report.append(f"| ROE | {sf(buffett.get('roe'))}% |")
+        report.append("")
+        report.append("#### DCF 多情景估值")
+        report.append("")
+        dcf = buffett.get('dcf_scenarios', {})
+        report.append("| 情景 | FCF 增长率 | 内在价值 | 与当前市值对比 |")
+        report.append("|------|-----------|----------|---------------|")
+        total_mv = financial.get('total_mv')
+        for name, data in dcf.items():
+            iv = data.get('intrinsic_value')
+            if iv and total_mv:
+                ratio = f"{'溢价' if iv > total_mv else '折价'} {abs(iv - total_mv) / total_mv * 100:.1f}%"
+            else:
+                ratio = 'N/A'
+            report.append(f"| {name} | {data.get('growth_rate', 'N/A')}% | **{sf(iv)} 元** | {ratio} |")
+        report.append(f"| **Buffett 评分** | **{buffett.get('buffett_score', 0)} / 100** | |")
+
+    def _append_position_lynch(self, report, lynch, current_price, sf):
+        report.append("")
+        report.append("### 3.4 彼得·林奇 — PEG 与成长性分析 🔴")
+        report.append("")
+        if not lynch:
+            report.append("- 无数据")
+            return
+        report.append("| 指标 | 数值 | 判断 |")
+        report.append("|------|------|------|")
+        report.append(f"| PE | **{sf(lynch.get('pe'))}** | {'极高' if (lynch.get('pe') or 0) > 30 else '可接受'} |")
+        report.append(f"| PEG 指标 | **{sf(lynch.get('peg_ratio'))}** | {'理想（<1）' if (lynch.get('peg_ratio') or 999) < 1 else ('合理（1-2）' if (lynch.get('peg_ratio') or 999) <= 2 else '偏高') if lynch.get('peg_ratio') is not None else '无法计算'} |")
+        report.append(f"| 公司分类 | **{lynch.get('company_category', '未知')}** | |")
+        report.append(f"| **Lynch 评分** | **{lynch.get('lynch_score', 0)} / 100** | |")
+
+    def _append_position_munger(self, report, munger, sf):
+        report.append("")
+        report.append("### 3.5 查理·芒格 — 企业质量分析 🟢")
+        report.append("")
+        if not munger:
+            report.append("- 无数据")
+            return
+        report.append("| 指标 | 数值 | 判断 |")
+        report.append("|------|------|------|")
+        report.append(f"| ROIC | {sf(munger.get('roic'))}% | |")
+        report.append(f"| 企业质量评级 | **{munger.get('quality_analysis', {}).get('rating', 'N/A')}** | |")
+        report.append(f"| Lollapalooza 效应 | {sf(munger.get('lollapalooza_score'))} 个 | |")
+        report.append(f"| **芒格评分** | **{munger.get('munger_score', 0)} / 100** | |")
+
+    def _append_position_dalio(self, report, dalio, sf, financial):
+        report.append("")
+        report.append("### 3.6 瑞·达里奥 — 宏观周期与全天候分析 🟡")
+        report.append("")
+        if not dalio:
+            report.append("- 无数据")
+            return
+        debt = dalio.get('debt_cycle_analysis', {})
+        total_assets = financial.get('total_assets')
+        total_liabilities = financial.get('total_liabilities')
+        fcf = financial.get('free_cashflow', 0)
+        asset_liability = '数据缺失'
+        if total_assets and total_liabilities:
+            ratio = total_liabilities / total_assets * 100
+            asset_liability = f'{ratio:.1f}%'
+
+        report.append("#### 债务周期分析")
+        report.append(f"| 资产负债率 | {asset_liability} |")
+        fcf_debt = 'N/A'
+        if fcf and total_liabilities and total_liabilities > 0:
+            fcf_debt = f'{fcf / total_liabilities * 100:.1f}%'
+        report.append(f"| FCF / 总债务 | {fcf_debt} |")
+        report.append(f"| 债务周期评级 | **{debt.get('rating', 'N/A')}** |")
+
+        real_return = dalio.get('real_return_estimate', {}).get('estimated_real_return')
+        report.append("")
+        report.append("#### 全天候象限")
+        quadrant = dalio.get('all_weather_quadrant', {})
+        report.append(f"| 适配象限 | {quadrant.get('quadrant', 'N/A')} |")
+        report.append(f"| 风险平价角色 | {quadrant.get('risk_parity_role', 'N/A')} |")
+        report.append(f"| 真实回报估算 | **{sf(real_return)}%** |")
+
+        report.append(f"| **Dalio 评分** | **{dalio.get('dalio_score', 0)} / 100** |")
+
+    def _append_position_decision(self, report, technical, current_price, cost_price, sf):
+        report.append("")
+        report.append("---")
+        report.append("")
+        report.append("## 四、持仓决策建议")
+        report.append("")
+        if not technical:
+            report.append("- 技术数据缺失，无法提供决策建议")
+            return
+        sr = technical.get('support_resistance', {})
+        r1 = sr.get('resistance_1')
+        s1 = sr.get('support_1')
+        pivot = sr.get('pivot')
+
+        report.append("### 操作建议")
+        report.append("")
+        report.append("| 操作 | 条件 | 说明 |")
+        report.append("|------|------|------|")
+        report.append(f"| **继续持有** | 当前情景 | 基于五大投资大师与技术面综合分析 |")
+        if r1:
+            report.append(f"| **观察阻力** | 突破 {r1:.2f} | 打开上行空间 |")
+        if s1:
+            report.append(f"| **严格止损** | 跌破 {s1:.2f} | 跌破支撑位代表趋势可能反转 |")
+        report.append("")
+
+        report.append("### 压力测试")
+        report.append("")
+        report.append("| 情景 | 应对 |")
+        report.append("|------|------|")
+        if r1 and current_price:
+            gain = (r1 - cost_price) / cost_price * 100 if cost_price else 0
+            report.append(f"| 最佳情景：突破 {r1:.2f} | 继续持有，盈利可达 +{gain:.1f}% |")
+        if pivot:
+            report.append(f"| 中性情景：在 {pivot:.2f}~{r1:.2f} 震荡" if r1 else f"| 中性情景 | 耐心持有，止损保护 |")
+        if s1:
+            loss = (s1 - cost_price) / cost_price * 100 if cost_price else 0
+            report.append(f"| 最差情景：跌破 {s1:.2f} | 止损离场，亏损 {loss:.1f}% |")
+        report.append(f"| 极端风险：连续跌停 | 止损已提前离场 |")
+        report.append("")
+
+    def _append_position_risks(self, report, graham, buffett, lynch, munger, dalio, technical):
+        report.append("---")
+        report.append("")
+        report.append("## 五、需要关注的信号")
+        report.append("")
+        idx = 1
+        if graham and graham.get('graham_score', 100) < 50:
+            report.append(f"{idx}. **基本面偏弱提醒**：Graham 评分 {graham.get('graham_score', 0)}/100，估值偏高，不建议加仓")
+            idx += 1
+        if buffett and buffett.get('moat_rating') in ['窄', '无']:
+            report.append(f"{idx}. **护城河不足**：Buffett 护城河评级为{'窄' if buffett.get('moat_rating') == '窄' else '无'}，缺乏持久竞争壁垒")
+            idx += 1
+        if lynch and lynch.get('lynch_score', 100) < 50:
+            report.append(f"{idx}. **成长性存疑**：Lynch 评分 {lynch.get('lynch_score', 0)}/100，PEG 指标不理想")
+            idx += 1
+        if dalio and dalio.get('dalio_score', 100) < 50:
+            real_ret = dalio.get('real_return_estimate', {}).get('estimated_real_return')
+            if real_ret is not None and real_ret < 0:
+                report.append(f"{idx}. **真实回报为负**：Dalio 估算真实回报 {real_ret:.1f}%，通胀调整后可能亏损")
+                idx += 1
+        if technical:
+            latest = technical.get('latest_signals', {})
+            if latest.get('rsi_signal') == -1:
+                report.append(f"{idx}. **RSI 超买警示** ⚠️：当前处于超买区域，短期内可能出现技术性回调")
+                idx += 1
+        report.append(f"{idx}. **止损纪律**：严格执行止损，保护本金安全")
+        report.append("")
+
     def _generate_text_report(self, stock_name: str, stock_code: str, stock_data: Dict[str, Any],
                            graham_result: Dict[str, Any], buffett_result: Dict[str, Any],
                            lynch_result: Dict[str, Any], munger_result: Dict[str, Any],

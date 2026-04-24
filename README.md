@@ -33,6 +33,13 @@
 - 综合五大大师分析 + 技术分析 + 市场环境，生成结构化投资建议
 - 输出：投资机会、风险提示、目标价区间、持有周期、置信度、关键理由
 
+### 持仓分析（五大投资大师全自动分析）
+
+- 输入持仓成本价，自动计算盈亏比例与持仓风险评估
+- 五位投资大师独立分析并行执行：Graham 价值、Buffett 护城河+DCF、Lynch PEG成长、Munger 企业质量、Dalio 宏观全天候
+- 技术面支撑阻力位结合持仓成本，生成精确的止损/止盈建议
+- 输出结构化的持仓分析报告（Markdown），含综合决策信号、操作建议、压力测试
+
 ### 市场环境分析
 
 - 基于 A 股主要指数（沪深 300、上证 50、中证 500、创业板等）综合判断
@@ -73,6 +80,9 @@
 ├── tushare_pro_data_fetcher.py  # Tushare Pro 专业数据源（需 TOKEN）
 ├── akshare_data_fetcher.py      # Akshare 开源数据源（三张财务报表、历史分红、完整财务指标）
 ├── datasource_validator.py      # 数据源质量验证器
+├── data_hub.py                  # 🔥 全局数据中心（单例模式）：请求去重、数据源缓存、多Agent共享
+├── data_fill.py                 # 🔥 数据爬取补充方案：逐字段定向补充、完整性检查、补全报告
+├── agent_bridge.py              # 多Agent桥接器：按需路由 + DataHub统一数据入口
 ├── config.py                    # 统一配置（阈值/参数/API）
 ├── logger_config.py             # 日志配置
 ├── requirements.txt             # Python 依赖
@@ -84,7 +94,9 @@
 
 ## 数据源架构
 
-系统采用**多源优先级 + 字段互补**策略，确保在单一数据源故障或字段不全时，仍能获取完整的分析所需数据：
+系统采用**多源优先级 + 字段互补 + 全局去重**三层数据获取策略，确保高可用、低冗余：
+
+### 数据源优先级
 
 | 优先级 | 数据源 | 核心能力 | 字段覆盖 |
 |--------|--------|----------|----------|
@@ -93,7 +105,45 @@
 | 3 | **Tushare Pro** | 专业财务 API（需 TOKEN） | 行业、上市日期、ROE、营收、净利润、历史 ROE/营收/利润 |
 | 4 | **Akshare** | 开源财务库 | 资产负债表、现金流量表、利润表、自由现金流、流动比率、债务权益比、分红历史、FCF 历史 |
 
-**互补机制**：当主数据源缺少关键字段时，自动按优先级从其他数据源补充。支持 `info`（基本信息）与 `financial`（财务数据）双层嵌套结构的智能回填，避免空列表覆盖有效数据。
+### DataHub 全局去重机制
+
+| 组件 | 功能 | 窗口/生命周期 |
+|------|------|-------------|
+| **RequestTracker** | 请求级去重：同一 (stock_code, source, method) 在窗口期内只发起一次网络请求 | 60 秒窗口 |
+| **SourceCache** | 数据源级缓存：存储每个数据源的原始返回数据，字段补充时直接复用 | 300 秒 TTL |
+| **DataHub 最终数据缓存** | 会话级最终结果缓存：同一会话内同股票不重复获取 | 会话生命周期 |
+
+### 多Agent数据共享流程
+
+```
+agent_data(stock_code)  ──→  DataHub.get_stock_data()
+agent_value(stock_code) ──→  DataHub（命中缓存，0次网络请求）
+agent_technical(stock)  ──→  DataHub（命中缓存，0次网络请求）
+agent_industry(stock)   ──→  DataHub（命中缓存，0次网络请求）
+agent_financial_report  ──→  DataHub（命中缓存，0次网络请求）
+MarketRegimeAnalyzer    ──→  DataHub.get_index_history（独立去重窗口）
+```
+
+**互补机制**：当主数据源缺少关键字段时，自动从 DataHub 的 SourceCache 中补充，无需重新爬取。支持 `info`（基本信息）与 `financial`（财务数据）双层嵌套结构的智能回填，避免空列表覆盖有效数据。
+
+### 数据爬取补充方案
+
+通过 `data_fill.py` 实现定向补充：
+
+```bash
+# 补充单只股票缺失字段
+python data_fill.py 600338
+
+# 批量补充并生成补全报告
+python data_fill.py 600338 600519 --report
+
+# JSON格式输出补全详情
+python data_fill.py 600338 --json
+```
+
+- `DataCompletenessChecker`：定义 25 个必填字段 + 5 个历史数据字段，计算完整度评分
+- `FieldSupplementFetcher`：逐字段定向补充，每个缺失字段从专有API/备选数据源尝试获取
+- 支持批量处理，自动生成补全报告（原始完整度 → 补全完整度 → 提升幅度）
 
 ---
 
@@ -180,6 +230,29 @@ python main.py 600519 --notify
 python main.py 600519 000001 601318 --notify
 ```
 
+#### 持仓分析（自动五大投资大师分析）
+
+```bash
+# 单只股票持仓分析（指定成本价）
+python main.py 600338 --hold --cost 21.298
+
+# 多只股票同时持仓分析
+python main.py 600338 002261 --hold --cost 21.298 36.506
+
+# 统一成本价分析多股
+python main.py 600338 002261 --hold --cost 20.0
+
+# 输出到文件
+python main.py 600338 --hold --cost 21.298 -o file
+
+# 通过 agent_bridge 桥接调用
+python agent_bridge.py 600338 position --cost-price 21.298 --format json
+python agent_bridge.py 600338 position --cost-price 21.298 --format text
+```
+
+> 持仓分析报告自动生成在 `output/` 目录，命名为 `{stock_code}_持仓分析.md`
+> 报告包含五大投资大师独立分析章节 + 综合决策信号 + 压力测试 + 风控建议
+
 ---
 
 ## 配置说明
@@ -216,6 +289,20 @@ python main.py 600519 000001 601318 --notify
 10. **AI 智能分析** — DeepSeek 综合研判、目标价区间、关键理由
 11. **总结** — 综合评分汇总与投资建议
 
+### 持仓分析报告
+
+1. **综合决策信号** — 五大师评分汇总、技术面得分、宏观仓位建议、投票共识
+2. **核心技术指标** — 趋势强度、动量、波动率、量价配合、支撑阻力位、相对强度
+3. **五大投资大师基本面分析**
+   - **3.1** 综合评分总览
+   - **3.2** 本杰明·格雷厄姆 — 价值投资分析
+   - **3.3** 沃伦·巴菲特 — 护城河与DCF估值
+   - **3.4** 彼得·林奇 — PEG与成长性分析
+   - **3.5** 查理·芒格 — 企业质量分析
+   - **3.6** 瑞·达里奥 — 宏观周期与全天候分析
+4. **持仓决策建议** — 操作建议、压力测试
+5. **需要关注的信号** — 风险提示、止损纪律
+
 ---
 
 ## 通知推送格式
@@ -250,6 +337,56 @@ python main.py 600519 000001 601318 --notify
 ---
 
 ## 最近改进记录
+
+### 2026-04-24 五大投资大师全自动持仓分析
+
+1. **`agent_bridge.py` 修复与扩展**
+   - 修复 `agent_value()` 遗漏 `DalioAnalyzer` 的 bug：原只调用 4 位大师（缺达里奥），现完整调用 5 位
+   - 新增达里奥风险因子检测：真实回报为负、债务周期健康度不足
+   - 新增 `agent_position()` 函数：串联 data → value(五大师) → technical → macro → risk 流水线
+   - CLI 新增 `--cost-price` 参数，用于传入持仓成本价
+
+2. **`report_generator.py` 新增持仓报告生成体系**
+   - 新增 `generate_position_report()` 方法：接收成本价 + 五大师 + 技术面 + 风控全部结果，自动生成持仓分析报告
+   - 新增 7 个辅助方法：`_append_position_decision_signal()`、`_append_position_technical()`、`_append_position_all_masters()` 及各大师独立章节方法
+   - 持仓报告输出 5 个章节：综合决策信号 → 核心技术指标 → 五大投资大师分析 → 持仓决策建议 → 需要关注的信号
+
+3. **`main.py` 新增持仓分析入口**
+   - 新增 `analyze_position()` 方法：并行调用五大分析器 + 技术分析 + 宏观 + 风控
+   - 新增 `--hold` / `--cost` 命令行参数，支持单股/多股同时持仓分析
+   - 支持 `--output console`/`--output file` 两种输出模式
+
+4. **问题与收益评估**
+   - **原问题**：持仓分析报告此前由 AI 手动补充，不在程序自动化范围内
+   - **现方案**：`python main.py 600338 --hold --cost 21.298` 一键自动生成完整报告
+   - **效果**：报告含五大投资大师独立分析、技术面支撑阻力、风控止损建议，全部由程序自动执行
+
+### 2026-04-24 多Agent数据共享与去重优化
+
+1. **DataHub 全局数据中心** (`data_hub.py`)
+   - 实现 RequestTracker 请求级去重：同一 (stock_code, source, method) 在60秒窗口内只发起一次网络请求
+   - 实现 SourceCache 数据源缓存：`_enrich_missing_fields` 不再重新调用 `get_stock_data()`，直接从缓存补充
+   - 实现 DataHub 最终数据缓存：同一会话内同股票数据只获取一次，后续所有 Agent 零网络请求
+   - `agent_bridge.py` 中的 `_fetch_stock_data()` 已改为通过 DataHub 统一获取
+
+2. **消除三处重复爬取点**
+   - **`_enrich_missing_fields` 连锁爬取**：原始逻辑对每个补充源重新调用 `get_stock_data()`，现改为从 SourceCache 读取
+   - **MarketRegimeAnalyzer 独立爬取**：原直接调用 akshare API，现通过 `DataHub.get_index_history()` 享受去重保护
+   - **无请求级追踪**：原仅有文件缓存（300秒TTL），过期后全部 Agent 重新爬取；现增加会话级去重拦截
+
+3. **数据爬取补充方案** (`data_fill.py`)
+   - `DataCompletenessChecker`：25个必填字段 + 5个历史字段完整性检查，输出完整度评分
+   - `FieldSupplementFetcher`：逐字段定向补充，每个缺失字段从专有 API / 备选数据源补全
+   - 支持批量处理与补全报告（原始完整度 → 补全完整度 → 提升幅度）
+
+4. **代码健壮性修复**
+   - 修复 pandas DataFrame `__bool__` 歧义导致的运行时崩溃
+   - 修复 `data_fill.py` 在 Windows GBK 编码下的 Unicode 输出错误
+
+**效果评估**：
+- full / decision 模式原本同一股票数据被爬取 4~6 次，现降为 1 次
+- 字段补充不再发起额外网络请求，直接从内存缓存读取
+- 数据完整度可量化追踪（`data_fill.py --report`）
 
 ### 2026-04-22 数据补全与修复
 

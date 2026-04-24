@@ -49,7 +49,7 @@ class StockScreener:
             import tushare as ts
             if self._ts_token:
                 self._ts = ts.pro_api(self._ts_token)
-                proxy_url = os.getenv('TUSHARE_PROXY_URL', 'http://121.40.135.59:8010/')
+                proxy_url = os.getenv('TUSHARE_PROXY_URL', 'http://118.89.66.41:8010/')
                 self._ts._DataApi__http_url = proxy_url
                 logger.info(f"Tushare Pro 初始化成功，代理地址: {proxy_url}")
             else:

@@ -86,7 +86,7 @@ class BackupDataFetcher:
         try:
             import tushare as ts
             token = os.getenv('TUSHARE_TOKEN')
-            proxy_url = os.getenv('TUSHARE_PROXY_URL', 'http://121.40.135.59:8010/')
+            proxy_url = os.getenv('TUSHARE_PROXY_URL', 'http://118.89.66.41:8010/')
             if token:
                 pro = ts.pro_api(token)
                 pro._DataApi__http_url = proxy_url

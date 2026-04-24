@@ -57,30 +57,42 @@ class MarketRegimeAnalyzer:
             return self._get_default_result()
 
     def _get_index_data(self) -> Dict[str, pd.DataFrame]:
-        """获取指数历史数据"""
-        result = {}
-        if not self._ak:
-            return result
+        """获取指数历史数据（通过DataHub实现去重共享）"""
+        from data_hub import DataHub
+        hub = DataHub.get_instance()
 
+        result = {}
         for name, code in self.INDEX_CODES.items():
             try:
-                df = self._ak.index_zh_a_hist(symbol=code, period="daily",
-                                               start_date="20230101")
+                df = hub.get_index_history(code, name)
                 if df is not None and not df.empty:
-                    df = df.rename(columns={
-                        '日期': 'Date',
-                        '开盘': 'Open',
-                        '收盘': 'Close',
-                        '最高': 'High',
-                        '最低': 'Low',
-                        '成交量': 'Volume'
-                    })
-                    df['Date'] = pd.to_datetime(df['Date'])
-                    df = df.set_index('Date').sort_index()
                     result[name] = df
-                    logger.info(f"获取 {name} 数据成功，共 {len(df)} 条")
+                    logger.info(f"[MarketRegime] 从DataHub获取 {name} 数据成功，共 {len(df)} 条")
             except Exception as e:
                 logger.warning(f"获取 {name} 数据失败: {e}")
+
+        if not result:
+            if self._ak:
+                logger.info("[MarketRegime] DataHub无缓存，尝试直接获取...")
+                for name, code in self.INDEX_CODES.items():
+                    try:
+                        df = self._ak.index_zh_a_hist(symbol=code, period="daily",
+                                                       start_date="20230101")
+                        if df is not None and not df.empty:
+                            df = df.rename(columns={
+                                '日期': 'Date',
+                                '开盘': 'Open',
+                                '收盘': 'Close',
+                                '最高': 'High',
+                                '最低': 'Low',
+                                '成交量': 'Volume'
+                            })
+                            df['Date'] = pd.to_datetime(df['Date'])
+                            df = df.set_index('Date').sort_index()
+                            result[name] = df
+                            logger.info(f"获取 {name} 数据成功，共 {len(df)} 条")
+                    except Exception as e:
+                        logger.warning(f"获取 {name} 数据失败: {e}")
 
         return result
 
