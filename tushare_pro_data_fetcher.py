@@ -251,7 +251,7 @@ class TushareProDataFetcher:
             if df is not None and not df.empty:
                 for _, row in df.head(years).iterrows():
                     roe = safe_float(row.get('roe'))
-                    if roe is not None and 0 < roe < 100:
+                    if roe is not None and -500 < roe < 500:
                         result['roe_history'].append(roe)
         except Exception as e:
             logger.warning(f"Tushare Pro 历史ROE获取失败: {e}")

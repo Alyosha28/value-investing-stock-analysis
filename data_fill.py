@@ -204,7 +204,6 @@ class FieldSupplementFetcher:
             'list_date': self._try_akshare_stock_info,
             'pb': self._try_xinhua_financial,
             'pe': self._try_xinhua_financial,
-            'roe': self._try_xinhua_financial,
             'eps': self._try_xinhua_financial,
             'total_mv': self._try_xinhua_market,
             'float_mv': self._try_xinhua_market,

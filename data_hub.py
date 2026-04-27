@@ -326,7 +326,10 @@ class DataHub:
         return result
 
     def get_market_data(self) -> Optional[Dict]:
-        """获取市场指数数据（带去重）"""
+        """[已弃用] 获取市场指数数据（带去重）
+        注意：各数据源均未实现 get_market_data() 方法，调用会失败。
+        请使用 get_index_history()（历史数据）或 MarketRegimeAnalyzer._fetch_index_snapshot()（实时行情）。
+        """
         if not self._tracker.should_proceed('market', 'primary', 'get_market_data'):
             for source in ['xinhua', 'backup', 'tushare', 'akshare']:
                 cached = self._source_cache.get('market', source)
@@ -354,17 +357,35 @@ class DataHub:
 
     def get_index_history(self, index_code: str, index_name: str = "") -> Optional[Any]:
         """
-        获取指数历史数据（MarketRegimeAnalyzer 用）
-        使用 DataHub 的去重机制避免重复爬取
+        获取指数历史数据（MarketRegimeAnalyzer 用）。
+        优先级：东方财富直连（BackupDataFetcher）→ akshare 回退。
+        自带去重缓存。
         """
         cache_key = f"index_{index_code}"
-        if not self._tracker.should_proceed(cache_key, 'akshare', 'index_history'):
+        if not self._tracker.should_proceed(cache_key, 'eastmoney', 'index_history'):
+            cached = self._source_cache.get(cache_key, 'eastmoney')
+            if cached is not None:
+                return cached
             cached = self._source_cache.get(cache_key, 'akshare')
             if cached is not None:
                 return cached
             return None
 
         self._record_request(cache_key)
+
+        # ── 第1层：东方财富直连 HTTP（带重试，快且可靠）──
+        try:
+            from backup_data_fetcher import BackupDataFetcher
+            bf = BackupDataFetcher()
+            df = bf.get_index_kline_from_eastmoney(index_code)
+            if df is not None and not df.empty:
+                self._source_cache.set(cache_key, 'eastmoney', df)
+                logger.info(f"[DataHub] 东方财富指数 {index_name or index_code} 数据获取成功，{len(df)} 条")
+                return df
+        except Exception as e:
+            logger.warning(f"[DataHub] 东方财富指数 {index_code} 获取失败，尝试 akshare: {e}")
+
+        # ── 第2层：akshare 回退 ──
         try:
             import akshare as ak
             df = ak.index_zh_a_hist(symbol=index_code, period="daily", start_date="20230101")
@@ -381,11 +402,39 @@ class DataHub:
                 df['Date'] = pd.to_datetime(df['Date'])
                 df = df.set_index('Date').sort_index()
                 self._source_cache.set(cache_key, 'akshare', df)
-                logger.info(f"[DataHub] 指数 {index_name or index_code} 数据获取成功，{len(df)} 条")
+                logger.info(f"[DataHub] akshare指数 {index_name or index_code} 数据获取成功，{len(df)} 条")
                 return df
         except Exception as e:
-            logger.warning(f"[DataHub] 指数 {index_code} 数据获取失败: {e}")
+            logger.warning(f"[DataHub] akshare指数 {index_code} 数据获取失败: {e}")
         return None
+
+    def get_index_snapshot(self, index_codes: list = None) -> Dict[str, Dict]:
+        """
+        获取指数实时快照（一次调用获取全部指数）。
+        优先级：东方财富 ulist API → 新浪财经 → 空字典。
+        带60秒去重缓存。
+        """
+        cache_key = "index_snapshot_all"
+        if not self._tracker.should_proceed(cache_key, 'eastmoney', 'index_snapshot'):
+            cached = self._source_cache.get(cache_key, 'eastmoney')
+            if cached is not None:
+                return cached
+            cached = self._source_cache.get(cache_key, 'sina')
+            if cached is not None:
+                return cached
+
+        self._record_request(cache_key)
+        try:
+            from backup_data_fetcher import BackupDataFetcher
+            bf = BackupDataFetcher()
+            snap = (bf.get_index_snapshot_from_eastmoney(index_codes)
+                    or bf.get_index_snapshot_from_sina(index_codes) or {})
+            if snap:
+                self._source_cache.set(cache_key, 'eastmoney', snap)
+            return snap
+        except Exception as e:
+            logger.warning(f"[DataHub] 指数快照获取失败: {e}")
+        return {}
 
     def close(self):
         if self._fetcher:

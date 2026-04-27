@@ -121,75 +121,67 @@ class MungerAnalyzer:
         }
         score = 0
 
+        def _norm(val, good, bad):
+            if val is None:
+                return None
+            s = (val - bad) / (good - bad) * 100
+            return max(0, min(100, int(s)))
+
+        # ROIC 连续评分 0-25
         if roic is not None:
+            rs = _norm(roic, 20, 0)
+            roic_score = rs * 0.25
+            score += int(roic_score)
             if roic >= MungerThresholds.ROIC_MIN:
-                analysis['details'].append(
-                    f"✓ ROIC={roic:.1f}% ≥ {MungerThresholds.ROIC_MIN}%（资本回报优秀）"
-                )
-                score += 25
+                analysis['details'].append(f"✓ ROIC={roic:.1f}%（资本回报优秀） +{int(roic_score)}")
             elif roic >= 10:
-                analysis['details'].append(
-                    f"○ ROIC={roic:.1f}%（尚可）"
-                )
-                score += 15
+                analysis['details'].append(f"○ ROIC={roic:.1f}%（尚可） +{int(roic_score)}")
             else:
-                analysis['details'].append(
-                    f"✗ ROIC={roic:.1f}%（资本回报不足）"
-                )
+                analysis['details'].append(f"✗ ROIC={roic:.1f}%（不足） +{int(roic_score)}")
         else:
             analysis['details'].append("○ ROIC数据缺失")
             if roe is not None and roe >= MungerThresholds.ROE_MIN:
                 score += 15
 
+        # ROE 连续评分 0-15
         if roe is not None:
+            rs = _norm(roe, 25, 0)
+            roe_score = rs * 0.15
+            score += int(roe_score)
             if roe >= 20:
-                analysis['details'].append(f"✓ ROE={roe:.1f}%（卓越）")
-                score += 15
+                analysis['details'].append(f"✓ ROE={roe:.1f}%（卓越） +{int(roe_score)}")
             elif roe >= MungerThresholds.ROE_MIN:
-                analysis['details'].append(f"✓ ROE={roe:.1f}%（良好）")
-                score += 10
+                analysis['details'].append(f"✓ ROE={roe:.1f}%（良好） +{int(roe_score)}")
             elif roe >= 10:
-                analysis['details'].append(f"○ ROE={roe:.1f}%（一般）")
-                score += 5
+                analysis['details'].append(f"○ ROE={roe:.1f}%（一般） +{int(roe_score)}")
             else:
-                analysis['details'].append(f"✗ ROE={roe:.1f}%（差）")
+                analysis['details'].append(f"✗ ROE={roe:.1f}%（差） +{int(roe_score)}")
 
+        # 毛利率 连续评分 0-15
         if gross_margin is not None:
+            gs = _norm(gross_margin, 50, 0)
+            gm_score = gs * 0.15
+            score += int(gm_score)
             if gross_margin >= 40:
-                analysis['details'].append(
-                    f"✓ 毛利率={gross_margin:.1f}%（强定价权）"
-                )
-                score += 15
+                analysis['details'].append(f"✓ 毛利率={gross_margin:.1f}%（强定价权） +{int(gm_score)}")
             elif gross_margin >= MungerThresholds.GROSS_MARGIN_MIN:
-                analysis['details'].append(
-                    f"✓ 毛利率={gross_margin:.1f}%（合理定价权）"
-                )
-                score += 10
+                analysis['details'].append(f"✓ 毛利率={gross_margin:.1f}%（合理） +{int(gm_score)}")
             elif gross_margin >= 15:
-                analysis['details'].append(
-                    f"○ 毛利率={gross_margin:.1f}%（定价权一般）"
-                )
-                score += 5
+                analysis['details'].append(f"○ 毛利率={gross_margin:.1f}%（一般） +{int(gm_score)}")
             else:
-                analysis['details'].append(
-                    f"✗ 毛利率={gross_margin:.1f}%（商品型企业）"
-                )
+                analysis['details'].append(f"✗ 毛利率={gross_margin:.1f}%（商品型企业） +{int(gm_score)}")
 
+        # 净利率 连续评分 0-10
         if net_margin is not None:
+            ns = _norm(net_margin, 20, 0)
+            nm_score = ns * 0.10
+            score += int(nm_score)
             if net_margin >= MungerThresholds.NET_MARGIN_MIN:
-                analysis['details'].append(
-                    f"✓ 净利率={net_margin:.1f}%（盈利能力强）"
-                )
-                score += 10
+                analysis['details'].append(f"✓ 净利率={net_margin:.1f}%（强） +{int(nm_score)}")
             elif net_margin >= 5:
-                analysis['details'].append(
-                    f"○ 净利率={net_margin:.1f}%"
-                )
-                score += 5
+                analysis['details'].append(f"○ 净利率={net_margin:.1f}% +{int(nm_score)}")
             else:
-                analysis['details'].append(
-                    f"✗ 净利率={net_margin:.1f}%（盈利能力弱）"
-                )
+                analysis['details'].append(f"✗ 净利率={net_margin:.1f}%（弱） +{int(nm_score)}")
 
         stability_score, stability_desc = self._evaluate_earnings_stability(
             earnings_history, roe_history
@@ -201,9 +193,9 @@ class MungerAnalyzer:
         analysis['score_contrib'] = score
         if score >= 60:
             analysis['rating'] = '卓越企业'
-        elif score >= 45:
+        elif score >= 40:
             analysis['rating'] = '良好企业'
-        elif score >= 30:
+        elif score >= 20:
             analysis['rating'] = '一般企业'
         else:
             analysis['rating'] = '差劲企业'
@@ -307,24 +299,27 @@ class MungerAnalyzer:
 
         if debt_to_equity is not None:
             if debt_to_equity > MungerThresholds.DEBT_TO_EQUITY_MAX:
-                checklist['failures'].append(
-                    f"✗ 负债过高: D/E={debt_to_equity:.2f}"
-                )
-                checklist['score_contrib'] -= 10
+                deduct = min(int(debt_to_equity / 1.5 * 10), 10)
+                checklist['failures'].append(f"✗ 负债过高: D/E={debt_to_equity:.2f} -{deduct}")
+                checklist['score_contrib'] -= deduct
             else:
                 checklist['passes'].append("✓ 负债水平可控")
 
         if earnings_history and len(earnings_history) >= 3:
-            if any(e is None or e <= 0 for e in earnings_history[-3:]):
-                checklist['failures'].append("✗ 近三年存在亏损")
-                checklist['score_contrib'] -= 15
+            negative_years = sum(1 for e in earnings_history[-3:] if e is None or e <= 0)
+            if negative_years > 0:
+                deduct = negative_years * 5
+                checklist['failures'].append(f"✗ 近3年有{negative_years}年亏损 -{deduct}")
+                checklist['score_contrib'] -= deduct
             else:
                 checklist['passes'].append("✓ 近三年持续盈利")
 
         if roe_history and len(roe_history) >= 3:
-            if any(r is None or r < 8 for r in roe_history[-3:]):
-                checklist['failures'].append("✗ 近三年ROE低于8%")
-                checklist['score_contrib'] -= 10
+            low_roe = sum(1 for r in roe_history[-3:] if r is None or r < 8)
+            if low_roe > 0:
+                deduct = low_roe * 4
+                checklist['failures'].append(f"✗ 近3年有{low_roe}年ROE低于8% -{deduct}")
+                checklist['score_contrib'] -= deduct
             else:
                 checklist['passes'].append("✓ 近三年ROE稳定")
 

@@ -161,6 +161,15 @@ class UltimateDataFetcher:
             except Exception as e:
                 logger.warning(f"从 {source_name} 补充数据失败: {e}")
 
+        # ROE fallback：若当前ROE缺失但ROE历史存在，用最新历史值回填
+        if 'roe' in missing:
+            roe_hist = financial.get('roe_history')
+            if roe_hist and len(roe_hist) > 0:
+                financial['roe'] = roe_hist[0]
+                result['roe'] = roe_hist[0]
+                missing.remove('roe')
+                logger.info(f"使用ROE历史最新值回填当前ROE: {roe_hist[0]:.2f}%")
+
         if missing:
             logger.warning(f"以下字段仍缺失: {missing}")
 
@@ -213,7 +222,10 @@ class UltimateDataFetcher:
         return result
 
     def get_market_data(self) -> Optional[Dict[str, Any]]:
-        """获取市场环境数据。"""
+        """[已弃用] 获取市场环境数据。
+        注意：各数据源均未实现 get_market_data() 方法，调用会失败。
+        请使用 MarketRegimeAnalyzer.analyze() 获取市场分析数据。
+        """
         sources = DataSourceConfig.get_source_priority()
         for source_name in sources:
             if source_name not in self._source_map:

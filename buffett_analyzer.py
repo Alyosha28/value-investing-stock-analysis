@@ -338,13 +338,17 @@ class BuffettAnalyzer:
             pv = future_fcf / (1 + discount_rate) ** year
             total_pv += pv
         
+        if discount_rate <= terminal_growth:
+            logger.warning(f"折现率({discount_rate}) <= 永续增长率({terminal_growth})，调整永续增长率")
+            terminal_growth = discount_rate - 0.005
+
         terminal_value = (future_fcf * (1 + terminal_growth)) / (discount_rate - terminal_growth)
         terminal_pv = terminal_value / (1 + discount_rate) ** projection_years
-        
+
         intrinsic_value = total_pv + terminal_pv
-        
+
         logger.info(f"DCF估值 - FCF:{fcf/1e8:.2f}亿, 增长率:{growth_rate:.1f}%, 内在价值:{intrinsic_value/1e8:.2f}亿")
-        
+
         return round(intrinsic_value, 2)
     
     def _estimate_dcf_scenarios(self, free_cashflow, fcf_history=None, net_profit=None):
@@ -364,24 +368,27 @@ class BuffettAnalyzer:
         base_growth = self._calculate_fcf_growth(fcf_history)
         if base_growth is None:
             base_growth = 5.0
-        
+
+        # 统一边界处理，防止极端值
+        base_growth = min(max(base_growth, -30), 30)
+
         scenarios = {
             '保守': {
-                'growth_rate': max(0, base_growth * 0.5),
+                'growth_rate': max(0, base_growth * 0.6),  # 负基线时取0，正基线时打6折
                 'discount_rate': DCFConfig.DISCOUNT_RATE + 0.02,
                 'terminal_growth': DCFConfig.TERMINAL_GROWTH_RATE * 0.5,
                 'description': '保守假设（行业增速放缓、竞争加剧）'
             },
             '中性': {
-                'growth_rate': base_growth,
+                'growth_rate': min(max(base_growth, 0), 15),  # 统一clamp到[0,15]，与单情景一致
                 'discount_rate': DCFConfig.DISCOUNT_RATE,
                 'terminal_growth': DCFConfig.TERMINAL_GROWTH_RATE,
                 'description': '中性假设（行业发展稳定）'
             },
             '乐观': {
-                'growth_rate': min(base_growth * 1.5, 25),
+                'growth_rate': min(max(base_growth * 1.3, 5), 25),  # 至少5%增长，上限25%
                 'discount_rate': DCFConfig.DISCOUNT_RATE - 0.01,
-                'terminal_growth': DCFConfig.TERMINAL_GROWTH_RATE * 1.5,
+                'terminal_growth': min(DCFConfig.TERMINAL_GROWTH_RATE * 1.5, 0.05),
                 'description': '乐观假设（行业高景气、需求爆发）'
             }
         }
@@ -402,6 +409,10 @@ class BuffettAnalyzer:
                 pv = future_fcf / (1 + discount_rate) ** year
                 total_pv += pv
             
+            if discount_rate <= terminal_growth:
+                logger.warning(f"情景({scenario_name})折现率({discount_rate}) <= 永续增长率({terminal_growth})，调整永续增长率")
+                terminal_growth = discount_rate - 0.005
+
             terminal_value = (future_fcf * (1 + terminal_growth)) / (discount_rate - terminal_growth)
             terminal_pv = terminal_value / (1 + discount_rate) ** projection_years
             
@@ -422,14 +433,14 @@ class BuffettAnalyzer:
     
     def _calculate_margin_of_safety(self, intrinsic_value, current_mv):
         """
-        安全边际 = (内在价值 - 当前市值) / 当前市值 × 100%
+        安全边际 = (内在价值 - 当前市值) / 内在价值 × 100%
         """
         if not intrinsic_value or not current_mv or current_mv <= 0:
-            return 0.0
-        
-        margin = (intrinsic_value - current_mv) / current_mv * 100
-        
-        return round(max(0, margin), 2)
+            return None
+
+        margin = (intrinsic_value - current_mv) / intrinsic_value * 100
+
+        return round(margin, 2)
     
     def _assess_capital_allocation(self, roe, net_profit, pe, debt_to_ebitda=None, capex_to_depreciation=None):
         """
@@ -519,45 +530,35 @@ class BuffettAnalyzer:
     
     def _calculate_score(self, moat, management, margin_of_safety, capital_allocation, debt_analysis):
         score = 0
-        
-        moat_rating_score = {
-            '宽护城河': 35,
-            '中等护城河': 25,
-            '窄护城河': 15,
-            '无护城河': 5
-        }
-        score += moat_rating_score.get(moat['rating'], 5)
-        
+
+        # 护城河连续评分：moat_score 范围约 0-22 → 映射到 0-35
+        raw_moat = moat.get('score', 0)
+        moat_continuous = min(int(raw_moat / 22 * 35), 35)
+        score += moat_continuous
+
         score += management * 0.2
-        
-        if margin_of_safety >= 50:
-            score += 25
-        elif margin_of_safety >= DCFConfig.MARGIN_OF_SAFETY_BUY * 100:
-            score += 20
-        elif margin_of_safety >= DCFConfig.MARGIN_OF_SAFETY_CONSIDER * 100:
-            score += 15
-        elif margin_of_safety >= 10:
-            score += 10
-        elif margin_of_safety >= 0:
-            score += 5
-        
+
+        # 安全边际连续贡献：MoS 0%→0分, 25%→15分, 50%→25分（非线性映射）
+        if margin_of_safety is not None and margin_of_safety > 0:
+            if margin_of_safety >= 50:
+                mos_score = 25
+            else:
+                mos_score = margin_of_safety / 50 * 25
+            score += int(mos_score)
+
         score += capital_allocation * 0.15
-        
-        debt_risk_score = {
-            '低': 10,
-            '中低': 8,
-            '中等': 5,
-            '高': 0,
-            '未知': 5
-        }
-        score += debt_risk_score.get(debt_analysis.get('risk_level', '未知'), 5)
-        
+
+        # 债务风险连续评分
+        debt_risk = debt_analysis.get('risk_level', '未知')
+        debt_score = {'低': 10, '中低': 8, '中等': 5, '高': 0, '未知': 5}
+        score += debt_score.get(debt_risk, 5)
+
         return min(int(score), 100)
     
     def _get_suggestion(self, score, moat, margin_of_safety):
         rating = moat['rating']
         
-        if score >= 80 and rating in ['宽护城河', '中等护城河'] and margin_of_safety >= 25:
+        if score >= 80 and rating in ['宽护城河', '中等护城河'] and margin_of_safety is not None and margin_of_safety >= 25:
             return "强烈建议买入 - 优质企业+安全价格"
         elif score >= 70 and rating in ['宽护城河', '中等护城河']:
             return "建议买入 - 好企业，价格合理"

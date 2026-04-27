@@ -282,7 +282,7 @@ class AkshareDataFetcher:
             if key_data_df is not None and not key_data_df.empty:
                 for _, row in key_data_df.head(years).iterrows():
                     roe = safe_float(row.get('加权净资产收益率(%)'))
-                    if roe is not None and 0 < roe < 100:
+                    if roe is not None and -500 < roe < 500:
                         result['roe_history'].append(roe)
                     
                     net_profit = safe_float(row.get('净利润(元)'))

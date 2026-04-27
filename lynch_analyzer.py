@@ -148,37 +148,37 @@ class LynchAnalyzer:
     def _analyze_debt(self, debt_to_equity, cash, total_mv) -> Dict[str, Any]:
         analysis = {'debt_to_equity': debt_to_equity, 'details': [], 'score_contrib': 0}
 
+        def _norm(val, good, bad):
+            if val is None:
+                return None
+            s = (val - bad) / (good - bad) * 100
+            return max(0, min(100, int(s)))
+
+        debt_score = 0
         if debt_to_equity is not None:
-            if debt_to_equity <= LynchThresholds.DEBT_TO_EQUITY_MAX:
-                analysis['details'].append(
-                    f"✓ 负债率健康: D/E={debt_to_equity:.2f} ≤ {LynchThresholds.DEBT_TO_EQUITY_MAX}"
-                )
-                analysis['score_contrib'] = 15
-            elif debt_to_equity <= 1.0:
-                analysis['details'].append(
-                    f"○ 负债率尚可: D/E={debt_to_equity:.2f}"
-                )
-                analysis['score_contrib'] = 8
+            ds = _norm(max(0, 0.5 - debt_to_equity), 1.0, 0)
+            debt_score = ds * 0.25  # map 0-100 → 0-25
+            if debt_score >= 15:
+                analysis['details'].append(f"✓ 负债率健康: D/E={debt_to_equity:.2f} → {int(debt_score)}/25")
+            elif debt_score >= 8:
+                analysis['details'].append(f"○ 负债率尚可: D/E={debt_to_equity:.2f} → {int(debt_score)}/25")
             else:
-                analysis['details'].append(
-                    f"✗ 负债率偏高: D/E={debt_to_equity:.2f}"
-                )
-                analysis['score_contrib'] = 0
+                analysis['details'].append(f"✗ 负债率偏高: D/E={debt_to_equity:.2f} → {int(debt_score)}/25")
+            analysis['score_contrib'] = int(debt_score)
         else:
             analysis['details'].append("○ 负债数据缺失")
             analysis['score_contrib'] = 5
 
         if cash and total_mv and total_mv > 0:
             cash_ratio = cash / total_mv
-            if cash_ratio >= LynchThresholds.CASH_TO_MARKETCAP_MIN:
-                analysis['details'].append(
-                    f"✓ 现金充裕: 现金/市值={cash_ratio:.1%}"
-                )
-                analysis['score_contrib'] += 10
-            else:
-                analysis['details'].append(
-                    f"○ 现金/市值={cash_ratio:.1%}"
-                )
+            cs = _norm(cash_ratio, 0.3, 0)
+            cash_bonus = cs * 0.10  # map 0-100 → 0-10
+            analysis['details'].append(
+                f"✓ 现金充裕: 现金/市值={cash_ratio:.1%} +{int(cash_bonus)}"
+                if cash_ratio >= LynchThresholds.CASH_TO_MARKETCAP_MIN
+                else f"○ 现金/市值={cash_ratio:.1%} +{int(cash_bonus)}"
+            )
+            analysis['score_contrib'] += int(cash_bonus)
 
         return analysis
 
@@ -219,21 +219,16 @@ class LynchAnalyzer:
         if institutional_pct is None:
             analysis['details'].append("○ 机构持股数据缺失")
             analysis['score_contrib'] = 5
-        elif institutional_pct > LynchThresholds.INSTITUTIONAL_MAX_PCT:
-            analysis['details'].append(
-                f"✗ 机构持股过高({institutional_pct:.0f}%)，上涨空间有限"
-            )
-            analysis['score_contrib'] = 0
-        elif institutional_pct > 40:
-            analysis['details'].append(
-                f"○ 机构持股{institutional_pct:.0f}%（适中）"
-            )
-            analysis['score_contrib'] = 5
         else:
-            analysis['details'].append(
-                f"✓ 机构持股较低({institutional_pct:.0f}%)，存在发现空间"
-            )
-            analysis['score_contrib'] = 15
+            # 连续评分：0%机构→15分, 40%→10分, 80%→0分
+            s = max(0, int(15 - institutional_pct / 80 * 15))
+            analysis['score_contrib'] = s
+            if institutional_pct <= 20:
+                analysis['details'].append(f"✓ 机构持股较低({institutional_pct:.0f}%)，存在发现空间 ({s}分)")
+            elif institutional_pct <= 50:
+                analysis['details'].append(f"○ 机构持股{institutional_pct:.0f}%（适中） ({s}分)")
+            else:
+                analysis['details'].append(f"✗ 机构持股偏高({institutional_pct:.0f}%) ({s}分)")
 
         return analysis
 
@@ -251,19 +246,37 @@ class LynchAnalyzer:
     ) -> Dict[str, Any]:
         analysis = {'peg': peg, 'details': [], 'score_contrib': 0}
 
+        def _norm(val, good, bad):
+            if val is None:
+                return None
+            s = (bad - val) / (bad - good) * 100
+            return max(0, min(100, int(s)))
+
         if peg is not None:
-            if peg <= LynchThresholds.PEG_BUY:
-                analysis['details'].append(f"✓ PEG={peg} ≤ 1（显著低估）")
-                analysis['score_contrib'] = 35
+            # PEG=0→45分, PEG=1→35分, PEG=1.5→25分, PEG=2→15分, PEG=3→0分
+            if peg <= 0.5:
+                vs = 45
+            elif peg <= 1.0:
+                vs = 35 + (1.0 - peg) / 0.5 * 10
             elif peg <= 1.5:
-                analysis['details'].append(f"✓ PEG={peg}（合理偏低）")
-                analysis['score_contrib'] = 25
-            elif peg <= LynchThresholds.PEG_CONSIDER:
-                analysis['details'].append(f"○ PEG={peg}（合理范围）")
-                analysis['score_contrib'] = 15
+                vs = 25 + (1.5 - peg) / 0.5 * 10
+            elif peg <= 2.0:
+                vs = 15 + (2.0 - peg) / 0.5 * 10
+            elif peg <= 3.0:
+                vs = (3.0 - peg) / 1.0 * 15
             else:
-                analysis['details'].append(f"✗ PEG={peg} > 2（高估）")
-                analysis['score_contrib'] = 0
+                vs = 0
+            analysis['score_contrib'] = int(vs)
+            if peg <= 0.7:
+                analysis['details'].append(f"✓ PEG={peg}（显著低估） +{int(vs)}")
+            elif peg <= 1.0:
+                analysis['details'].append(f"✓ PEG={peg} ≤ 1（低估） +{int(vs)}")
+            elif peg <= 1.5:
+                analysis['details'].append(f"○ PEG={peg}（合理偏低） +{int(vs)}")
+            elif peg <= 2.0:
+                analysis['details'].append(f"△ PEG={peg}（合理偏高） +{int(vs)}")
+            else:
+                analysis['details'].append(f"✗ PEG={peg} > 2（高估） +{int(vs)}")
         else:
             if pe is not None and growth_rate is not None:
                 analysis['details'].append("○ PEG无法计算（增长率或PE缺失）")
@@ -271,9 +284,9 @@ class LynchAnalyzer:
                 analysis['details'].append("○ 估值数据不足")
             analysis['score_contrib'] = 5
 
-        if category == '快速增长型' and pe is not None:
-            if pe <= growth_rate if growth_rate else False:
-                analysis['details'].append("✓ PE低于增长率（林奇经典买点）")
+        if category == '快速增长型' and pe is not None and growth_rate:
+            if pe <= growth_rate:
+                analysis['details'].append(f"✓ PE({pe}) < 增长率({growth_rate})（林奇买点） +10")
                 analysis['score_contrib'] += 10
 
         return analysis
@@ -301,11 +314,9 @@ class LynchAnalyzer:
         }
         score += category_bonus.get(category, 0)
 
-        if growth_rate is not None:
-            if growth_rate >= 30:
-                score += 10
-            elif growth_rate >= 20:
-                score += 5
+        if growth_rate is not None and growth_rate >= 5:
+            gr_bonus = min(int(growth_rate / 30 * 10), 10)
+            score += gr_bonus
 
         return min(int(score), 100)
 

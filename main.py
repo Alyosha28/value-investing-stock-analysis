@@ -380,18 +380,40 @@ def main():
     if args.market:
         analyzer = MarketRegimeAnalyzer()
         regime = analyzer.analyze()
-        print("=" * 80)
-        print("市场环境分析")
-        print("=" * 80)
-        print(f"分析日期: {regime.get('analysis_date', 'N/A')}")
-        print(f"综合判断: {regime.get('composite_regime', '未知')}")
-        print(f"趋势强度: {regime.get('trend_strength', 'N/A')}/100")
-        print(f"波动率状态: {regime.get('volatility_regime', '未知')}")
-        print(f"建议仓位: {regime.get('recommend_position', 'N/A')}%")
+        print("=" * 90)
+        print("A 股市场大盘综合分析".center(82))
+        print("=" * 90)
+        print(f"分析日期: {regime.get('analysis_date', 'N/A')}  |  "
+              f"综合判断: {regime.get('composite_regime', '未知')}  |  "
+              f"建议仓位: {regime.get('recommend_position', 'N/A')}%")
+        bc = regime.get('bullish_count', 0)
+        tc = regime.get('total_index_count', 0)
+        br = regime.get('breadth_ratio', 0) * 100
+        bw_signal = ('●●●●○ 强势多方' if br >= 80 else
+                     '●●●○○ 多方占优' if br >= 60 else
+                     '●●●●○ 强势空方' if br <= 20 else
+                     '●●○○○ 空方占优' if br <= 40 else
+                     '●●●○○ 多空均衡')
+        print(f"市场宽度: {bc}/{tc} 偏多 | 广度比率: {br:.1f}% | {bw_signal}")
+        print(f"趋势强度: {regime.get('trend_strength', 'N/A')}/100  |  "
+              f"波动率状态: {regime.get('volatility_regime', '未知')}")
+        print()
         print(analyzer.get_position_advice(regime))
-        print("-" * 40)
-        for detail in regime.get('details', []):
-            print(detail)
+        print("-" * 90)
+        header = f" {'指数名称':<8} {'代码':<8} {'最新价':>10} {'涨跌幅':>8} {'趋势阶段':<24} {'趋势分':>6}"
+        print(header)
+        print("-" * 90)
+        for name, r in regime.get('index_regimes', {}).items():
+            code = analyzer.INDEX_CODES.get(name, 'N/A')
+            price = r.get('latest_close', 'N/A')
+            chg = r.get('change_pct')
+            chg_str = f"{chg:+.2f}%" if chg is not None else 'N/A'
+            stage = r.get('stage', '未知')
+            score = r.get('trend_score', 'N/A')
+            print(f" {name:<7} {code:<8} {str(price):>10} {chg_str:>8} {stage:<24} {score:>6}")
+        print("-" * 90)
+        print()
+        print("* 涨跌幅和最新价来自 akshare 实时行情快照，趋势阶段基于历史均线系统分析。")
         if args.notify:
             notifier.send_market_regime(regime)
         return

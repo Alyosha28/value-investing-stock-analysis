@@ -232,14 +232,33 @@ class Notifier:
             f"- **趋势强度**: {regime.get('trend_strength', 'N/A')}/100",
             f"- **波动率状态**: {regime.get('volatility_regime', '未知')}",
             f"- **建议仓位**: {regime.get('recommend_position', 'N/A')}%",
-            "",
         ]
+        bc = regime.get('bullish_count', 0)
+        tc = regime.get('total_index_count', 0)
+        br = (regime.get('breadth_ratio', 0) or 0) * 100
+        if tc:
+            lines.append(f"- **市场宽度**: {bc}/{tc} 偏多（广度比率 {br:.1f}%）")
+        lines.append("")
+
+        index_regimes = regime.get('index_regimes', {})
+        if index_regimes:
+            lines.append("| 指数 | 最新价 | 涨跌幅 | 趋势阶段 |")
+            lines.append("|------|--------|--------|----------|")
+            for name, data in index_regimes.items():
+                price = data.get('latest_close', 'N/A')
+                chg = data.get('change_pct')
+                chg_str = f"{chg:+.2f}%" if chg is not None else 'N/A'
+                stage = data.get('stage', 'N/A')
+                lines.append(f"| {name} | {price} | {chg_str} | {stage} |")
+            lines.append("")
+
         details = regime.get('details', [])
-        if details:
+        if not index_regimes and details:
             lines.append("**指数详情**:")
             for d in details:
                 lines.append(f"- {d}")
             lines.append("")
+
         lines.append("---")
         lines.append("*免责声明：仅供参考，不构成投资建议。*")
         return "\n".join(lines)

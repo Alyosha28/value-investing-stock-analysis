@@ -248,7 +248,17 @@ class ReportGenerator:
         report.append(f"| PE（市盈率） | **{sf(graham.get('pe'))}** | {'远超标准' if (graham.get('pe') or 999) > 15 else '尚可'} |")
         report.append(f"| 内在价值（格雷厄姆公式） | **{sf(graham.get('intrinsic_value'))} 元** | 当前价 {current_price:.2f} 的 {sf(round(graham.get('intrinsic_value', 0) / current_price * 100, 1) if current_price else 'N/A')}% |")
         margin = graham.get('margin_of_safety')
-        report.append(f"| 安全边际 | **{sf(margin)}%** | {'不具备安全边际' if (margin is not None and margin < 0) else '具备安全边际'} |")
+        if margin is None:
+            margin_desc = '无法计算'
+        elif margin < 0:
+            margin_desc = '不具备安全边际（股价高估）'
+        elif margin < 15:
+            margin_desc = '安全边际不足'
+        elif margin < 33:
+            margin_desc = '具备一定安全边际'
+        else:
+            margin_desc = '具备充足安全边际'
+        report.append(f"| 安全边际 | **{sf(margin)}%** | {margin_desc} |")
         report.append(f"| Graham 评分 | **{graham.get('graham_score', 0)} / 100** | {'严重高估' if graham.get('graham_score', 0) < 40 else '可关注'} |")
 
     def _append_position_buffett(self, report, buffett, current_price, sf, financial):
@@ -266,16 +276,18 @@ class ReportGenerator:
         report.append("#### DCF 多情景估值")
         report.append("")
         dcf = buffett.get('dcf_scenarios', {})
-        report.append("| 情景 | FCF 增长率 | 内在价值 | 与当前市值对比 |")
-        report.append("|------|-----------|----------|---------------|")
+        report.append("| 情景 | FCF 增长率 | 企业总价值 | 每股内在价值 | 与当前市值对比 |")
+        report.append("|------|-----------|-----------|-------------|---------------|")
         total_mv = financial.get('total_mv')
+        total_share = financial.get('total_share')
         for name, data in dcf.items():
             iv = data.get('intrinsic_value')
+            iv_per_share = iv / total_share if iv and total_share and total_share > 0 else None
             if iv and total_mv:
-                ratio = f"{'溢价' if iv > total_mv else '折价'} {abs(iv - total_mv) / total_mv * 100:.1f}%"
+                ratio = f"{'低估' if iv > total_mv else '高估'} {abs(iv - total_mv) / total_mv * 100:.1f}%"
             else:
                 ratio = 'N/A'
-            report.append(f"| {name} | {data.get('growth_rate', 'N/A')}% | **{sf(iv)} 元** | {ratio} |")
+            report.append(f"| {name} | {data.get('growth_rate', 'N/A')}% | {sf(iv, ',')} 元 | {sf(iv_per_share, '.2f')} 元/股 | {ratio} |")
         report.append(f"| **Buffett 评分** | **{buffett.get('buffett_score', 0)} / 100** | |")
 
     def _append_position_lynch(self, report, lynch, current_price, sf):
@@ -428,12 +440,14 @@ class ReportGenerator:
                 except Exception:
                     return str(value)
             return str(value)
-        
+
+        financial = stock_data.get('financial', {})
+
         self._append_market_regime(report, market_regime)
         self._append_basic_info(report, stock_data, safe_format)
         self._append_financial_data(report, stock_data, safe_format)
         self._append_graham_analysis(report, graham_result, safe_format)
-        self._append_buffett_analysis(report, buffett_result, safe_format)
+        self._append_buffett_analysis(report, buffett_result, safe_format, financial)
         self._append_lynch_analysis(report, lynch_result, safe_format)
         self._append_munger_analysis(report, munger_result, safe_format)
         self._append_dalio_analysis(report, dalio_result, safe_format)
@@ -474,7 +488,6 @@ class ReportGenerator:
             report.append(f"- {risk}")
         
         report.append("\n### 估值分析")
-        financial = stock_data.get('financial', {})
         pe = financial.get('pe')
         pb = financial.get('pb')
         roe = financial.get('roe')
@@ -483,8 +496,14 @@ class ReportGenerator:
         if graham_result and graham_result.get('intrinsic_value'):
             intrinsic_values.append(('格雷厄姆', graham_result['intrinsic_value']))
         if buffett_result and buffett_result.get('intrinsic_value'):
-            intrinsic_values.append(('DCF', buffett_result['intrinsic_value']))
-        
+            iv = buffett_result['intrinsic_value']
+            total_share = financial.get('total_share')
+            if total_share and total_share > 0:
+                iv_per_share = iv / total_share
+                intrinsic_values.append(('DCF(每股)', iv_per_share))
+            else:
+                intrinsic_values.append(('DCF(企业价值)', iv))
+
         if intrinsic_values:
             report.append("内在价值估算:")
             for method, value in intrinsic_values:
@@ -658,27 +677,61 @@ class ReportGenerator:
         trend = market_regime.get('trend_strength', 'N/A')
         volatility = market_regime.get('volatility_regime', '未知')
         position = market_regime.get('recommend_position', 'N/A')
+        bc = market_regime.get('bullish_count', 0)
+        tc = market_regime.get('total_index_count', 0)
+        br = (market_regime.get('breadth_ratio', 0) or 0) * 100
 
-        report.append(f"- 综合判断: {composite}")
-        report.append(f"- 趋势强度: {trend}/100")
-        report.append(f"- 波动率状态: {volatility}")
-        report.append(f"- 建议仓位: {position}%")
-
-        details = market_regime.get('details', [])
-        if details:
-            report.append("\n指数详情:")
-            for detail in details:
-                report.append(f"  {detail}")
+        report.append(f"- **综合判断**: {composite}")
+        report.append(f"- **趋势强度**: {trend}/100")
+        report.append(f"- **波动率状态**: {volatility}")
+        report.append(f"- **建议仓位**: {position}%")
+        report.append(f"- **市场宽度**: {bc}/{tc} 偏多（广度比率 {br:.1f}%）")
 
         index_regimes = market_regime.get('index_regimes', {})
         if index_regimes:
-            report.append("\n技术指标概览:")
+            report.append("\n### 指数概览")
+            report.append("")
+            report.append("| 指数 | 代码 | 最新价 | 涨跌幅 | 趋势阶段 | MA20 | MA50 | MA200 | 波动率 |")
+            report.append("|------|------|--------|--------|----------|------|------|------|--------|")
+            from market_regime import MarketRegimeAnalyzer
+            idx_codes = MarketRegimeAnalyzer.INDEX_CODES
             for name, data in index_regimes.items():
-                report.append(
-                    f"  {name}: 收盘 {data.get('latest_close', 'N/A')} | "
-                    f"MA20 {data.get('ma20', 'N/A')} | MA50 {data.get('ma50', 'N/A')} | "
-                    f"MA200 {data.get('ma200', 'N/A')} | 波动率 {data.get('volatility_pct', 'N/A')}%"
-                )
+                code = idx_codes.get(name, 'N/A')
+                price = data.get('latest_close', 'N/A')
+                chg = data.get('change_pct')
+                chg_str = f"{chg:+.2f}%" if chg is not None else 'N/A'
+                stage = data.get('stage', 'N/A')
+                ma20 = data.get('ma20', 'N/A')
+                ma50 = data.get('ma50', 'N/A')
+                ma200 = data.get('ma200', 'N/A')
+                vol = data.get('volatility_pct', 'N/A')
+                report.append(f"| {name} | {code} | {price} | {chg_str} | {stage} | {ma20} | {ma50} | {ma200} | {vol}% |")
+
+        # 市场宽度信号
+        if bc is not None and tc:
+            if br >= 80:
+                breadth_desc = '强势多方 —— 大部分指数处于上升趋势'
+            elif br >= 60:
+                breadth_desc = '多方占优 —— 多数指数偏强，关注强势板块'
+            elif br <= 20:
+                breadth_desc = '强势空方 —— 大部分指数处于下跌趋势，注意风险'
+            elif br <= 40:
+                breadth_desc = '空方占优 —— 多数指数偏弱，防御为主'
+            else:
+                breadth_desc = '多空均衡 —— 市场缺乏明确方向'
+            report.append(f"\n**市场宽度信号**: {breadth_desc}")
+
+            if index_regimes:
+                strongest = max(index_regimes.items(), key=lambda x: x[1].get('trend_score', 0))
+                weakest = min(index_regimes.items(), key=lambda x: x[1].get('trend_score', 0))
+                report.append(f"\n- 最强指数: **{strongest[0]}**（趋势分 {strongest[1].get('trend_score', 'N/A')})")
+                report.append(f"- 最弱指数: **{weakest[0]}**（趋势分 {weakest[1].get('trend_score', 'N/A')})")
+
+        details = market_regime.get('details', [])
+        if not index_regimes and details:
+            report.append("\n指数详情:")
+            for detail in details:
+                report.append(f"  {detail}")
 
     def _append_basic_info(self, report: list, stock_data: Dict[str, Any], safe_format):
         report.append("\n## 2. 股票基本信息")
@@ -735,7 +788,7 @@ class ReportGenerator:
         else:
             report.append("- 无数据")
     
-    def _append_buffett_analysis(self, report: list, buffett_result: Dict[str, Any], safe_format):
+    def _append_buffett_analysis(self, report: list, buffett_result: Dict[str, Any], safe_format, financial=None):
         report.append("\n## 5. 巴菲特价值投资分析")
         if buffett_result:
             report.append(f"- 净资产收益率 (ROE): {safe_format(buffett_result.get('roe'))}%")
@@ -743,15 +796,29 @@ class ReportGenerator:
             report.append(f"- 自由现金流: {safe_format(buffett_result.get('free_cashflow'), ',')} 元")
             report.append(f"- FCF增长率: {safe_format(buffett_result.get('fcf_growth_rate'))}%")
             report.append(f"- 经济护城河: {buffett_result.get('moat_rating', '无')}")
-            report.append(f"- 内在价值(DCF): {safe_format(buffett_result.get('intrinsic_value'), ',')} 元")
-            
+            intrinsic_value = buffett_result.get('intrinsic_value')
+            total_share = financial.get('total_share') if financial else None
+            if intrinsic_value and total_share and total_share > 0:
+                iv_per_share = intrinsic_value / total_share
+                report.append(f"- 内在价值(DCF): {safe_format(intrinsic_value, ',')} 元（企业总价值）")
+                report.append(f"- 每股内在价值(DCF): {safe_format(iv_per_share, '.2f')} 元/股")
+            else:
+                report.append(f"- 内在价值(DCF): {safe_format(intrinsic_value, ',')} 元")
+
             dcf_scenarios = buffett_result.get('dcf_scenarios')
             if dcf_scenarios:
                 report.append("\n多情景DCF估值:")
                 for scenario_name, scenario_data in dcf_scenarios.items():
-                    report.append(f"  {scenario_name}: {safe_format(scenario_data.get('intrinsic_value'), ',')}元 (增长率:{scenario_data.get('growth_rate')}%, {scenario_data.get('description')})")
-            
-            report.append(f"- 安全边际: {safe_format(buffett_result.get('margin_of_safety'))}%")
+                    iv_sc = scenario_data.get('intrinsic_value')
+                    iv_sc_per_share = iv_sc / total_share if iv_sc and total_share and total_share > 0 else None
+                    report.append(f"  {scenario_name}: {safe_format(iv_sc, ',')}元（企业总价值）{safe_format(iv_sc_per_share, '.2f')}元/股 (增长率:{scenario_data.get('growth_rate')}%, {scenario_data.get('description')})")
+
+            mos = buffett_result.get('margin_of_safety')
+            if mos is not None:
+                mos_desc = "具备安全边际" if mos >= 25 else ("安全边际一般" if mos >= 15 else ("安全边际不足" if mos >= 0 else "股价高估"))
+                report.append(f"- 安全边际: {safe_format(mos)}% ({mos_desc})")
+            else:
+                report.append(f"- 安全边际: 无法计算")
             report.append(f"- 管理层评分: {safe_format(buffett_result.get('management_score'))}/100")
             report.append(f"- 资本配置评分: {safe_format(buffett_result.get('capital_allocation'))}/100")
             

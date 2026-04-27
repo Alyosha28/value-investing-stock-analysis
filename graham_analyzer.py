@@ -70,7 +70,7 @@ class GrahamAnalyzer:
                 'current_ratio': current_ratio,
                 'debt_to_equity': debt_to_equity,
                 'graham_score': score,
-                'meets_graham_standards': criteria_results['passed_count'] >= 5,
+                'meets_graham_standards': criteria_results.get('criteria_score', 0) >= 60,
                 'margin_of_safety': margin_of_safety,
                 'intrinsic_value': intrinsic_value,
                 'criteria_details': criteria_results,
@@ -86,89 +86,136 @@ class GrahamAnalyzer:
     
     def _check_defensive_criteria(self, pe, pb, roe, total_mv, gross_margin, net_margin,
                                    current_ratio, debt_to_equity, earnings_history, dividend_history):
-        criteria = {
-            'passed_count': 0,
-            'total_criteria': 9,
-            'details': []
-        }
-        
-        if total_mv and total_mv >= 1e9:
-            criteria['passed_count'] += 1
-            criteria['details'].append(f"✓ 企业规模: 市值{total_mv/1e8:.0f}亿 ≥ 10亿")
+        """
+        防御型投资者检查——连续评分而非二元通过/失败
+
+        每个指标映射到 0-100 分（与基准值对齐），最终平均得到 criteria_score。
+        """
+        scores = []
+        details = []
+
+        def _norm(val, good, bad):
+            """0-100连续评分：val==good→100，val==bad→0，中间线性插值"""
+            if val is None:
+                return None
+            score = (val - bad) / (good - bad) * 100
+            return max(0, min(100, int(score)))
+
+        # 1) 市值（越大越好）
+        if total_mv and total_mv > 0:
+            s = _norm(total_mv, 1e10, 1e9)  # 100亿→100, 10亿→0
+            mv_str = f"市值 {total_mv/1e8:.0f}亿 → {s}/100"
         else:
-            criteria['details'].append(f"✗ 企业规模: 市值不足10亿")
-        
+            s = None
+            mv_str = "数据缺失"
+        if s is not None:
+            scores.append(s)
+        details.append(f"{'✓' if s and s >= 50 else '○' if s is None else '✗'} 企业规模: {mv_str}")
+
+        # 2) PE（越低越好，15为中性）
         if pe and pe > 0:
-            if pe <= GrahamThresholds.PE_MAX:
-                criteria['passed_count'] += 1
-                criteria['details'].append(f"✓ 市盈率: PE={pe:.2f} ≤ {GrahamThresholds.PE_MAX}")
-            else:
-                criteria['details'].append(f"✗ 市盈率: PE={pe:.2f} > {GrahamThresholds.PE_MAX}")
+            s = _norm(pe, 0, 30)  # PE=0→100, PE=30→0
+            pe_str = f"PE={pe:.2f} → {s}/100"
         else:
-            criteria['details'].append(f"✗ 市盈率: 数据缺失或为负")
-        
+            s = None
+            pe_str = "数据缺失或为负"
+        if s is not None:
+            scores.append(s)
+        details.append(f"{'✓' if s and s >= 50 else '○' if s is None else '✗'} 市盈率: {pe_str}")
+
+        # 3) PB（越低越好，1.5为中性）
         if pb and pb > 0:
-            if pb <= GrahamThresholds.PB_MAX:
-                criteria['passed_count'] += 1
-                criteria['details'].append(f"✓ 市净率: PB={pb:.2f} ≤ {GrahamThresholds.PB_MAX}")
-            else:
-                criteria['details'].append(f"✗ 市净率: PB={pb:.2f} > {GrahamThresholds.PB_MAX}")
+            s = _norm(pb, 0, 3)  # PB=0→100, PB=3→0
+            pb_str = f"PB={pb:.2f} → {s}/100"
         else:
-            criteria['details'].append(f"✗ 市净率: 数据缺失")
-        
+            s = None
+            pb_str = "数据缺失"
+        if s is not None:
+            scores.append(s)
+        details.append(f"{'✓' if s and s >= 50 else '○' if s is None else '✗'} 市净率: {pb_str}")
+
+        # 4) PE×PB（越低越好，22.5为中性）
         if pe and pb and pe > 0 and pb > 0:
             product = pe * pb
-            if product <= GrahamThresholds.GRAHAM_NUMBER_MULTIPLIER:
-                criteria['passed_count'] += 1
-                criteria['details'].append(f"✓ PE×PB: {product:.2f} ≤ {GrahamThresholds.GRAHAM_NUMBER_MULTIPLIER}")
+            s = _norm(product, 0, 45)  # 0→100, 45→0
+            gs_str = f"PE×PB={product:.1f} → {s}/100"
+        else:
+            s = None
+            gs_str = "数据缺失"
+        if s is not None:
+            scores.append(s)
+        details.append(f"{'✓' if s and s >= 50 else '○' if s is None else '✗'} {gs_str}")
+
+        # 5) ROE（越高越好，12%为中性）
+        if roe is not None and roe > 0:
+            s = _norm(roe, 25, 0)  # ROE=25%→100, ROE=0%→0
+            roe_str = f"ROE={roe:.2f}% → {s}/100"
+        else:
+            s = None
+            roe_str = "数据缺失"
+        if s is not None:
+            scores.append(s)
+        details.append(f"{'✓' if s and s >= 50 else '○' if s is None else '✗'} 盈利能力: {roe_str}")
+
+        # 6) 流动比率（适中为佳，2.0为中性）
+        if current_ratio and current_ratio > 0:
+            if current_ratio >= 2.0:
+                s = _norm(current_ratio, 3.0, 2.0)  # 3.0→100, 2.0→50
             else:
-                criteria['details'].append(f"✗ PE×PB: {product:.2f} > {GrahamThresholds.GRAHAM_NUMBER_MULTIPLIER}")
+                s = _norm(current_ratio, 2.0, 0.5)  # 2.0→50, 0.5→0
+            cr_str = f"流动比率={current_ratio:.2f} → {s}/100"
         else:
-            criteria['details'].append(f"✗ PE×PB: 数据缺失")
-        
-        if roe and roe >= 12:
-            criteria['passed_count'] += 1
-            criteria['details'].append(f"✓ 盈利能力: ROE={roe:.2f}% ≥ 12%")
+            s = None
+            cr_str = "数据缺失"
+        if s is not None:
+            scores.append(s)
+        details.append(f"{'✓' if s and s >= 50 else '○' if s is None else '✗'} {cr_str}")
+
+        # 7) 债务权益比（越低越好，1.0为中性）
+        if debt_to_equity is not None and debt_to_equity >= 0:
+            s = _norm(max(0, 1.0 - debt_to_equity), 1.0, 0)  # D/E=0→100, D/E=1→50, D/E=3→0
+            de_str = f"D/E={debt_to_equity:.2f} → {s}/100"
         else:
-            criteria['details'].append(f"✗ 盈利能力: ROE={roe}% < 12%")
-        
-        if current_ratio and current_ratio >= GrahamThresholds.CURRENT_RATIO_MIN:
-            criteria['passed_count'] += 1
-            criteria['details'].append(f"✓ 流动比率: {current_ratio:.2f} ≥ {GrahamThresholds.CURRENT_RATIO_MIN}")
-        elif current_ratio:
-            criteria['details'].append(f"✗ 流动比率: {current_ratio:.2f} < {GrahamThresholds.CURRENT_RATIO_MIN}")
+            s = None
+            de_str = "数据缺失"
+        if s is not None:
+            scores.append(s)
+        details.append(f"{'✓' if s and s >= 50 else '○' if s is None else '✗'} 债务权益比: {de_str}")
+
+        # 8) 盈利稳定性（连续盈利年数占比）
+        if earnings_history and len(earnings_history) >= 5:
+            positive_years = sum(1 for e in earnings_history if e and e > 0)
+            ratio = positive_years / len(earnings_history)
+            s = _norm(ratio, 1.0, 0.5)  # 100%→100, 50%→0
+            eh_str = f"近{len(earnings_history)}年盈利年数:{positive_years}/{len(earnings_history)} → {s}/100"
         else:
-            criteria['details'].append(f"○ 流动比率: 数据缺失")
-        
-        if debt_to_equity and debt_to_equity <= GrahamThresholds.DEBT_TO_EQUITY_MAX:
-            criteria['passed_count'] += 1
-            criteria['details'].append(f"✓ 债务权益比: {debt_to_equity:.2f} ≤ {GrahamThresholds.DEBT_TO_EQUITY_MAX}")
-        elif debt_to_equity:
-            criteria['details'].append(f"✗ 债务权益比: {debt_to_equity:.2f} > {GrahamThresholds.DEBT_TO_EQUITY_MAX}")
+            s = None
+            eh_str = f"历史数据不足"
+        if s is not None:
+            scores.append(s)
+        details.append(f"{'✓' if s and s >= 50 else '○' if s is None else '✗'} 盈利稳定性: {eh_str}")
+
+        # 9) 分红记录（分红年数比例）
+        if dividend_history and len(dividend_history) >= 3:
+            paid_years = sum(1 for d in dividend_history if d and d > 0)
+            ratio = paid_years / len(dividend_history)
+            s = _norm(ratio, 1.0, 0.5)  # 100%→100, 50%→0
+            dh_str = f"近{len(dividend_history)}年分红年数:{paid_years}/{len(dividend_history)} → {s}/100"
         else:
-            criteria['details'].append(f"○ 债务权益比: 数据缺失")
-        
-        if earnings_history and len(earnings_history) >= GrahamThresholds.EARNINGS_YEARS_REQUIRED:
-            earnings_stable = all(e > 0 for e in earnings_history[-GrahamThresholds.EARNINGS_YEARS_REQUIRED:])
-            if earnings_stable:
-                criteria['passed_count'] += 1
-                criteria['details'].append(f"✓ 盈利稳定性: 近{GrahamThresholds.EARNINGS_YEARS_REQUIRED}年盈利均为正")
-            else:
-                criteria['details'].append(f"✗ 盈利稳定性: 近{GrahamThresholds.EARNINGS_YEARS_REQUIRED}年存在亏损年份")
-        else:
-            criteria['details'].append(f"○ 盈利稳定性: 历史数据不足{GrahamThresholds.EARNINGS_YEARS_REQUIRED}年")
-        
-        if dividend_history and len(dividend_history) >= 5:
-            dividends_paid = sum(1 for d in dividend_history[-5:] if d and d > 0)
-            if dividends_paid >= 5:
-                criteria['passed_count'] += 1
-                criteria['details'].append(f"✓ 分红记录: 近5年连续分红")
-            else:
-                criteria['details'].append(f"✗ 分红记录: 近5年分红{dividends_paid}/5年")
-        else:
-            criteria['details'].append(f"○ 分红记录: 历史数据不足")
-        
-        return criteria
+            s = None
+            dh_str = "历史数据不足"
+        if s is not None:
+            scores.append(s)
+        details.append(f"{'✓' if s and s >= 50 else '○' if s is None else '✗'} 分红记录: {dh_str}")
+
+        criteria_score = int(sum(scores) / len(scores)) if scores else 0
+
+        return {
+            'passed_count': criteria_score,
+            'total_criteria': 100,
+            'details': details,
+            'criteria_score': criteria_score,
+        }
     
     def _calculate_intrinsic_value(self, eps, earnings_history):
         """
@@ -205,41 +252,35 @@ class GrahamAnalyzer:
         格雷厄姆要求安全边际至少33%
         """
         if not intrinsic_value or not current_price or current_price <= 0:
-            return 0.0
-        
+            return None
+
         margin = (intrinsic_value - current_price) / intrinsic_value * 100
-        
-        return round(max(0, margin), 2)
+
+        return round(margin, 2)
     
     def _calculate_score(self, criteria, margin_of_safety):
-        base_score = (criteria['passed_count'] / criteria['total_criteria']) * 70
-        
+        # criteria['passed_count'] 已变为连续值 0-100
+        base_score = criteria.get('criteria_score', criteria['passed_count']) * 0.60
+
         bonus = 0
-        if margin_of_safety >= GrahamThresholds.MARGIN_SAFETY_HIGH:
-            bonus = 30
-        elif margin_of_safety >= GrahamThresholds.MARGIN_SAFETY_MEDIUM:
-            bonus = 25
-        elif margin_of_safety >= GrahamThresholds.MARGIN_SAFETY_MINIMUM:
-            bonus = 15
-        elif margin_of_safety >= 10:
-            bonus = 5
-        
+        if margin_of_safety is not None and margin_of_safety > 0:
+            bonus = min(margin_of_safety / 50 * 40, 40)
+
         return min(int(base_score + bonus), 100)
     
     def _get_suggestion(self, score, margin_of_safety, criteria):
-        passed = criteria['passed_count']
-        total = criteria['total_criteria']
-        
-        if score >= 80 and margin_of_safety >= GrahamThresholds.MARGIN_SAFETY_MEDIUM:
-            return f"强烈建议买入 - 符合{passed}/{total}项标准，安全边际{margin_of_safety:.0f}%"
-        elif score >= 65 and margin_of_safety >= GrahamThresholds.MARGIN_SAFETY_MINIMUM:
-            return f"建议买入 - 符合{passed}/{total}项标准，有安全边际"
+        cs = criteria.get('criteria_score', criteria['passed_count'])
+
+        if score >= 80 and margin_of_safety is not None and margin_of_safety >= GrahamThresholds.MARGIN_SAFETY_MEDIUM:
+            return f"强烈建议买入 - 综合评分{cs:.0f}分，安全边际{margin_of_safety:.0f}%"
+        elif score >= 65 and margin_of_safety is not None and margin_of_safety >= GrahamThresholds.MARGIN_SAFETY_MINIMUM:
+            return f"建议买入 - 综合评分{cs:.0f}分，有安全边际"
         elif score >= 50:
-            return f"考虑买入 - 符合{passed}/{total}项标准"
+            return f"考虑买入 - 综合评分{cs:.0f}分"
         elif score >= 35:
-            return f"关注 - 符合{passed}/{total}项标准"
+            return f"关注 - 综合评分{cs:.0f}分"
         else:
-            return f"不建议买入 - 仅符合{passed}/{total}项标准"
+            return f"不建议买入 - 仅{cs:.0f}分"
     
     def _get_empty_result(self):
         return {

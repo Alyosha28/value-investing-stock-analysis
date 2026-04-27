@@ -148,6 +148,14 @@ class BackupDataFetcher:
             return f"1.{stock_code}"
         return f"0.{stock_code}"
 
+    @staticmethod
+    def _to_eastmoney_index_secid(index_code: str) -> str:
+        """指数代码转东方财富secid。上交所指数(0xxxxx) → 1.0xxxxx，深交所指数(3xxxxx) → 0.3xxxxx"""
+        code = index_code.strip()
+        if code.startswith('0'):
+            return f"1.{code}"
+        return f"0.{code}"
+
     def _convert_eastmoney_value(self, field: str, raw_value) -> Any:
         if raw_value is None or raw_value == '-':
             return None
@@ -258,6 +266,201 @@ class BackupDataFetcher:
             logger.warning(f"东方财富K线获取失败: {e}")
 
         return None
+
+    # ── 指数数据获取（东方财富 / 新浪 / 腾讯）────────────────────────────────
+
+    def get_index_kline_from_eastmoney(self, index_code: str, start_date: str = "20230101",
+                                        limit: int = 1000) -> Optional[pd.DataFrame]:
+        """从东方财富获取指数历史K线（自带重试）。fqt=0 因为指数无需复权。"""
+        try:
+            secid = self._to_eastmoney_index_secid(index_code)
+            url = "http://push2his.eastmoney.com/api/qt/stock/kline/get"
+            params = {
+                'secid': secid,
+                'fields1': 'f1,f2,f3,f4,f5,f6',
+                'fields2': 'f51,f52,f53,f54,f55,f56,f57,f58',
+                'klt': 101,
+                'fqt': 0,
+                'end': '20500101',
+                'lmt': limit,
+                '_': int(time.time() * 1000),
+            }
+            response = self._safe_request(url, params=params)
+            if not response or response.status_code != 200:
+                logger.warning(f"[Backup] 东方财富指数K线 HTTP失败: {index_code}")
+                return None
+
+            data = response.json()
+            klines = data.get('data', {}).get('klines', [])
+            if not klines:
+                logger.warning(f"[Backup] 东方财富指数K线无数据: {index_code}")
+                return None
+
+            rows = []
+            for line in klines:
+                parts = line.split(',')
+                if len(parts) >= 7:
+                    rows.append({
+                        'Date': parts[0],
+                        'Open': safe_float(parts[1]),
+                        'Close': safe_float(parts[2]),
+                        'High': safe_float(parts[3]),
+                        'Low': safe_float(parts[4]),
+                        'Volume': safe_float(parts[5]),
+                        'Amount': safe_float(parts[6]),
+                    })
+
+            if rows:
+                df = pd.DataFrame(rows)
+                df['Date'] = pd.to_datetime(df['Date'])
+                df = df.set_index('Date').sort_index()
+                # ── 按起始日期截断 ──
+                start_ts = pd.Timestamp(start_date)
+                df = df[df.index >= start_ts]
+                logger.info(f"[Backup] 东方财富指数{index_code} K线获取成功，共 {len(df)} 条")
+                return df
+
+        except Exception as e:
+            logger.warning(f"[Backup] 东方财富指数K线异常: {index_code} — {e}")
+
+        return None
+
+    def get_index_snapshot_from_eastmoney(self, index_codes: List[str] = None) -> Optional[Dict[str, Dict]]:
+        """从东方财富获取多只指数的实时快照（一次 HTTP 调用覆盖全部指数，自带重试）。
+        返回: { '上证指数': {'price': ..., 'change_pct': ..., ...}, ... }
+        """
+        try:
+            if index_codes is None:
+                from market_regime import MarketRegimeAnalyzer
+                index_codes = list(MarketRegimeAnalyzer.INDEX_CODES.values())
+
+            if not index_codes:
+                return {}
+
+            secids = [self._to_eastmoney_index_secid(c) for c in index_codes]
+            url = "http://push2.eastmoney.com/api/qt/ulist.np/get"
+            params = {
+                'fltt': 2,
+                'fields': 'f2,f3,f4,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18',
+                'secids': ','.join(secids),
+                '_': int(time.time() * 1000),
+            }
+            response = self._safe_request(url, params=params)
+            if not response or response.status_code != 200:
+                logger.warning("[Backup] 东方财富指数快照 HTTP失败")
+                return None
+
+            data = response.json()
+            items = data.get('data', {}).get('diff', [])
+            if not items:
+                logger.warning("[Backup] 东方财富指数快照无数据")
+                return None
+
+            result = {}
+            from market_regime import MarketRegimeAnalyzer
+            idx_map = {v: k for k, v in MarketRegimeAnalyzer.INDEX_CODES.items()}
+
+            for item in items:
+                code = item.get('f12', '')
+                name = idx_map.get(code, item.get('f14', code))
+                result[name] = {
+                    'latest_price': safe_float(item.get('f2')) or 0,
+                    'change_pct': safe_float(item.get('f3')) or 0,
+                    'change_amount': safe_float(item.get('f4')) or 0,
+                    'volume': safe_float(item.get('f5')) or 0,
+                    'amount': safe_float(item.get('f6')) or 0,
+                    'amplitude': safe_float(item.get('f7')) or 0,
+                    'high': safe_float(item.get('f15')) or 0,
+                    'low': safe_float(item.get('f16')) or 0,
+                    'open': safe_float(item.get('f17')) or 0,
+                    'prev_close': safe_float(item.get('f18')) or 0,
+                }
+            logger.info(f"[Backup] 东方财富指数快照获取成功，共 {len(result)} 只")
+            return result
+
+        except Exception as e:
+            logger.warning(f"[Backup] 东方财富指数快照异常: {e}")
+
+        return None
+
+    def get_index_snapshot_from_sina(self, index_codes: List[str] = None) -> Optional[Dict[str, Dict]]:
+        """从新浪财经获取指数实时行情。s_sh000001 格式；单次批量请求全部指数。"""
+        try:
+            if index_codes is None:
+                from market_regime import MarketRegimeAnalyzer
+                index_codes = list(MarketRegimeAnalyzer.INDEX_CODES.values())
+
+            if not index_codes:
+                return {}
+
+            # 新浪指数代码格式: sh000001 → s_sh000001, sz399001 → s_sz399001
+            sina_codes = [(c, f"s_sh{c}" if c.startswith('0') else f"s_sz{c}") for c in index_codes]
+            url = "http://hq.sinajs.cn/list=" + ",".join(sc for _, sc in sina_codes)
+            headers = {'Referer': 'https://finance.sina.com.cn'}
+            response = self._safe_request(url, headers=headers)
+            if not response or response.status_code != 200:
+                logger.warning("[Backup] 新浪指数快照 HTTP失败")
+                return None
+
+            content = response.content.decode('gbk')
+            from market_regime import MarketRegimeAnalyzer
+            idx_map = {v: k for k, v in MarketRegimeAnalyzer.INDEX_CODES.items()}
+
+            result = {}
+            for idx_code, sina_code in sina_codes:
+                try:
+                    pattern = re.escape(f'var hq_str_{sina_code}="') + r'([^"]*)'
+                    match = re.search(pattern, content)
+                    if not match:
+                        continue
+                    fields = match.group(1).split(',')
+                    if len(fields) < 5:
+                        continue
+                    name = idx_map.get(idx_code, fields[0])
+                    result[name] = {
+                        'latest_price': safe_float(fields[1]) or 0,
+                        'change_amount': safe_float(fields[2]) or 0,
+                        'change_pct': safe_float(fields[3]) or 0,
+                        'volume': safe_float(fields[4]) or 0,
+                        'amount': safe_float(fields[5]) * 10000 if len(fields) > 5 else 0,
+                        'prev_close': 0,
+                        'open': 0,
+                        'high': 0,
+                        'low': 0,
+                        'amplitude': 0,
+                    }
+                except Exception:
+                    continue
+
+            if result:
+                logger.info(f"[Backup] 新浪指数快照获取成功，共 {len(result)} 只")
+            return result
+
+        except Exception as e:
+            logger.warning(f"[Backup] 新浪指数快照异常: {e}")
+
+        return None
+
+    def get_index_data(self, index_codes: List[str] = None) -> Dict[str, Any]:
+        """统一指数数据获取入口：依次尝试东方财富 K线 + 快照，新浪快照作为回退。
+        返回 { 'history': {name: DataFrame}, 'snapshot': {name: dict} }
+        """
+        if index_codes is None:
+            from market_regime import MarketRegimeAnalyzer
+            index_codes = list(MarketRegimeAnalyzer.INDEX_CODES.values())
+
+        history = {}
+        for code in index_codes:
+            df = self.get_index_kline_from_eastmoney(code)
+            if df is not None and not df.empty:
+                from market_regime import MarketRegimeAnalyzer
+                idx_map = {v: k for k, v in MarketRegimeAnalyzer.INDEX_CODES.items()}
+                history[idx_map.get(code, code)] = df
+
+        snapshot = (self.get_index_snapshot_from_eastmoney(index_codes)
+                    or self.get_index_snapshot_from_sina(index_codes) or {})
+
+        return {'history': history, 'snapshot': snapshot}
 
     def get_stock_info_from_sina(self, stock_code: str) -> Optional[Dict]:
         try:

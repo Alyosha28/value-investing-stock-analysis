@@ -357,8 +357,15 @@ def agent_value(stock_code: str, cache: AgentCache) -> Dict:
     result['key_risks'] = risks if risks else ['暂未识别重大基本面风险']
 
     graham_iv = graham.get('intrinsic_value')
-    buffett_dcf = buffett.get('dcf_intrinsic_value')
-    buy_prices = [p for p in [graham_iv, buffett_dcf] if p and p > 0]
+    buffett_iv = buffett.get('intrinsic_value')
+    # DCF返回的是企业总价值，需转换为每股价值才能与Graham内在价值比较
+    total_share = stock_data.get('financial', {}).get('total_share')
+    if buffett_iv and total_share and total_share > 0:
+        buffett_per_share = buffett_iv / total_share
+    else:
+        buffett_per_share = None
+
+    buy_prices = [p for p in [graham_iv, buffett_per_share] if p and p > 0]
     if buy_prices:
         low = min(buy_prices) * 0.8
         high = max(buy_prices)
@@ -469,14 +476,22 @@ def agent_macro(stock_code: str = None, cache: AgentCache = None) -> Dict:
         'analysis_date': regime.get('analysis_date', datetime.now().strftime('%Y-%m-%d')),
         'index_regimes': regime.get('index_regimes', {}),
         'details': regime.get('details', []),
+        'index_snapshots': regime.get('index_snapshots', {}),
+        'breadth_ratio': regime.get('breadth_ratio', 0.5),
+        'bullish_count': regime.get('bullish_count', 0),
+        'total_index_count': regime.get('total_index_count', 0),
     }
 
     position = regime.get('recommend_position', 50)
+    br = regime.get('breadth_ratio', 0.5)
     if isinstance(position, (int, float)):
         if position >= 70:
             env = '强牛'
         elif position >= 50:
-            env = '弱牛/结构性'
+            if br >= 0.6:
+                env = '偏多震荡/结构性'
+            else:
+                env = '弱牛/结构性'
         elif position >= 30:
             env = '震荡'
         elif position >= 10:
@@ -1192,6 +1207,11 @@ def format_text(wrapped: Dict) -> str:
         lines.append(f'趋势强度: {result.get("trend_strength", 0)}/100')
         lines.append(f'波动率: {result.get("volatility_regime", "N/A")}')
         lines.append(f'建议仓位: {result.get("recommend_position", "N/A")}%')
+        bc = result.get('bullish_count', 0)
+        tc = result.get('total_index_count', 0)
+        if tc:
+            br_pct = (result.get('breadth_ratio', 0) or 0) * 100
+            lines.append(f'市场宽度: {bc}/{tc} 偏多（广度比率 {br_pct:.1f}%）')
 
     elif agent == '风控官':
         lines.append(f'风险等级: {result.get("risk_level", "N/A")}')

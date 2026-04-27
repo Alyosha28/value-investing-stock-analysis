@@ -230,7 +230,6 @@ class XinhuaFinanceDataFetcher:
         result = {
             'pe': quote.get('pe'),
             'pb': quote.get('pb'),
-            'roe': None,
             'total_mv': quote.get('total_mv'),
             'float_mv': quote.get('float_mv'),
             'eps': quote.get('eps'),

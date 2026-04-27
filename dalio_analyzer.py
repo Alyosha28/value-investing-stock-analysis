@@ -5,6 +5,7 @@ from config import calculate_cagr
 
 
 class DalioThresholds:
+    DEBT_TO_EQUITY_MAX = 1.0
     DEBT_TO_EBITDA_MAX = 3.0
     INTEREST_COVERAGE_MIN = 3.0
     DEBT_SERVICE_RATIO_MAX = 0.4
