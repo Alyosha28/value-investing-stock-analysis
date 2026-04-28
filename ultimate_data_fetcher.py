@@ -82,6 +82,10 @@ class UltimateDataFetcher:
             'current_price', 'eps', 'total_share', 'float_share',
             'free_cashflow', 'current_ratio', 'debt_to_equity',
             'cash_and_equivalents', 'total_debt', 'pe',
+            'accounts_receivable', 'inventory', 'goodwill',           # NEW
+            'fixed_assets', 'intangible_assets', 'goodwill_to_assets',
+            'operating_cashflow', 'investing_cashflow', 'financing_cashflow',
+            'asset_liability_ratio', 'advances_from_customers', 'accounts_payable',
         }
         history_fields = {
             'fcf_history', 'dividend_history', 'earnings_history',
@@ -207,6 +211,9 @@ class UltimateDataFetcher:
             'current_assets', 'current_liabilities', 'cash_and_equivalents',
             'total_equity', 'total_debt', 'current_ratio', 'debt_to_equity',
             'asset_liability_ratio', 'short_term_debt', 'long_term_debt',
+            'accounts_receivable', 'inventory', 'goodwill', 'fixed_assets',  # NEW
+            'intangible_assets', 'goodwill_to_assets',
+            'advances_from_customers', 'accounts_payable',
             'total_share', 'float_share', 'turnover_rate',
             'earnings_history', 'roe_history', 'fcf_history',
             'dividend_history', 'revenue_history', 'volume', 'amount',

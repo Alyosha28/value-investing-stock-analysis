@@ -139,23 +139,37 @@ class AkshareDataFetcher:
     def get_balance_sheet(self, stock_code: str) -> Optional[Dict]:
         if not self._ak:
             return None
-        
+
         try:
             balance_df = self._retry_on_failure(self._ak.stock_financial_report_sina, stock=stock_code, symbol='资产负债表')
             if balance_df is not None and not balance_df.empty:
                 latest = balance_df.iloc[0]
-                
-                total_assets = safe_float(latest.get('资产总计'))
-                total_liabilities = safe_float(latest.get('负债合计'))
-                current_assets = safe_float(latest.get('流动资产合计'))
-                current_liabilities = safe_float(latest.get('流动负债合计'))
-                cash = safe_float(latest.get('货币资金'))
-                total_equity = safe_float(latest.get('股东权益合计')) or (total_assets - total_liabilities if total_assets and total_liabilities else None)
-                
-                short_term_debt = safe_float(latest.get('短期借款')) or 0
-                long_term_debt = safe_float(latest.get('长期借款')) or 0
+
+                def _bs(key):
+                    return safe_float(latest.get(key))
+
+                total_assets = _bs('资产总计')
+                total_liabilities = _bs('负债合计')
+                current_assets = _bs('流动资产合计')
+                current_liabilities = _bs('流动负债合计')
+                cash = _bs('货币资金')
+                total_equity = _bs('股东权益合计') or (total_assets - total_liabilities if total_assets and total_liabilities else None)
+
+                short_term_debt = _bs('短期借款') or 0
+                long_term_debt = _bs('长期借款') or 0
                 total_debt = short_term_debt + long_term_debt
-                
+
+                # ── 财报解读专家所需扩展字段 ──
+                accounts_receivable = _bs('应收账款')          # 收入质量、提前确认收入红旗
+                inventory = _bs('存货')                        # 存货周转率趋势
+                goodwill = _bs('商誉')                         # 商誉/净资产>30%红旗
+                fixed_assets = _bs('固定资产')                 # 固定资产增长vs折旧
+                intangible_assets = _bs('无形资产')            # 资本化分析
+                advances_from_customers = _bs('预收账款')       # 预收收入（收入质量）
+                accounts_payable = _bs('应付账款')             # 供应商关系
+                deferred_revenue = _bs('递延收益')             # 递延收入
+                construction_in_progress = _bs('在建工程')      # 资本化可能
+
                 result = {
                     'total_assets': total_assets,
                     'total_liabilities': total_liabilities,
@@ -166,25 +180,72 @@ class AkshareDataFetcher:
                     'total_debt': total_debt,
                     'short_term_debt': short_term_debt,
                     'long_term_debt': long_term_debt,
+                    'accounts_receivable': accounts_receivable,      # NEW
+                    'inventory': inventory,                          # NEW
+                    'goodwill': goodwill,                            # NEW
+                    'fixed_assets': fixed_assets,                    # NEW
+                    'intangible_assets': intangible_assets,          # NEW
+                    'advances_from_customers': advances_from_customers,
+                    'accounts_payable': accounts_payable,
                 }
-                
+
                 if current_assets and current_liabilities and current_liabilities > 0:
                     result['current_ratio'] = round(current_assets / current_liabilities, 2)
-                
                 if total_equity and total_equity > 0 and total_debt:
                     result['debt_to_equity'] = round(total_debt / total_equity, 2)
-                
                 if total_assets and total_liabilities:
                     result['asset_liability_ratio'] = round(total_liabilities / total_assets * 100, 2)
-                
-                logger.info(f"akshare 资产负债表 - 总资产:{total_assets/1e8 if total_assets else 0:.0f}亿, 负债率:{result.get('asset_liability_ratio')}%")
+                if total_assets and goodwill:
+                    result['goodwill_to_assets'] = round(goodwill / total_assets * 100, 2)
+
+                logger.info(f"akshare 资产负债表 - 总资产:{total_assets/1e8 if total_assets else 0:.0f}亿")
                 return result
-                
+
         except Exception as e:
             logger.warning(f"akshare 资产负债表获取失败: {e}")
-        
+
         return None
-    
+
+    def get_financial_reports_history(self, stock_code: str, periods: int = 5) -> Optional[Dict[str, list]]:
+        """获取多期财务报表序列（利润表+资产负债表+现金流量表），用于三表交叉验证。
+        返回 { 'income': [{...}], 'balance': [{...}], 'cashflow': [{...}] }，按时间倒序排列。
+        """
+        if not self._ak:
+            return None
+
+        result = {}
+        for report_name, symbol, key_fields in [
+            ('income', '利润表', ['营业总收入', '营业收入', '净利润', '归属母公司股东的净利润',
+                                  '营业利润', '营业成本', '非经常性损益']),
+            ('cashflow', '现金流量表', ['经营活动产生的现金流量净额', '投资活动产生的现金流量净额',
+                                       '筹资活动产生的现金流量净额', '现金及现金等价物净增加额',
+                                       '购建固定资产、无形资产和其他长期资产支付的现金']),
+            ('balance', '资产负债表', ['资产总计', '负债合计', '流动资产合计', '流动负债合计',
+                                       '货币资金', '股东权益合计', '短期借款', '长期借款',
+                                       '应收账款', '存货', '商誉', '固定资产', '无形资产', '预收账款',
+                                       '应付账款']),
+        ]:
+            try:
+                df = self._retry_on_failure(self._ak.stock_financial_report_sina, stock=stock_code, symbol=symbol)
+                if df is not None and not df.empty:
+                    reports = []
+                    for i in range(min(periods, len(df))):
+                        row = df.iloc[i]
+                        entry = {k: safe_float(row.get(k)) for k in key_fields if row.get(k) is not None}
+                        entry['report_date'] = str(row.get('报告日', ''))
+                        reports.append(entry)
+                    result[report_name] = reports
+                    logger.info(f"akshare {symbol} 多期数据获取成功，{len(reports)}期")
+                else:
+                    result[report_name] = []
+            except Exception as e:
+                logger.warning(f"akshare {symbol} 多期获取失败: {e}")
+                result[report_name] = []
+
+        if any(v for v in result.values()):
+            return result
+        return None
+
     def get_realtime_quote(self, stock_code: str) -> Optional[Dict]:
         if not self._ak:
             return None

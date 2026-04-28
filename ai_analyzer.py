@@ -109,17 +109,38 @@ class AIAnalyzer:
             market_regime = technical_result.get('market_regime', 'unknown')
             signal_strength = technical_result.get('signal_strength', '无法评估')
             sr_levels = technical_result.get('support_resistance', {})
-            
+            macd_analysis = technical_result.get('macd_analysis', {})
+            kdj_analysis = technical_result.get('kdj_analysis', {})
+            rsi_analysis = technical_result.get('rsi_analysis', {})
+            bollinger_analysis = technical_result.get('bollinger_analysis', {})
+
             prompt_parts.append("\n【技术分析】")
             prompt_parts.append(f"综合评分: {composite_score}/100, 信号强度: {signal_strength}")
             prompt_parts.append(f"市场状态: {market_regime}")
             prompt_parts.append(f"趋势得分: {dimension_scores.get('trend', 0)}, 动量得分: {dimension_scores.get('momentum', 0)}")
             prompt_parts.append(f"波动率得分: {dimension_scores.get('volatility', 0)}, 量价得分: {dimension_scores.get('volume', 0)}")
+
+            # MACD 详情
+            if macd_analysis and 'macd_value' in macd_analysis:
+                prompt_parts.append(f"MACD分析: 快线{macd_analysis.get('macd_value')}, {macd_analysis.get('cross_text', '')}, {macd_analysis.get('zero_text', '')}, 柱状图{macd_analysis.get('histogram_text', '')}, 背离:{macd_analysis.get('divergence_text', '无')}")
+
+            # KDJ 详情
+            if kdj_analysis and 'k' in kdj_analysis:
+                prompt_parts.append(f"KDJ分析: K值{kdj_analysis.get('k')}, D值{kdj_analysis.get('d')}, J值{kdj_analysis.get('j')}, 交叉:{kdj_analysis.get('cross_text', '无')}, 位置:{kdj_analysis.get('j_position', '')}")
+
+            # RSI 详情
+            if rsi_analysis and 'rsi_value' in rsi_analysis:
+                prompt_parts.append(f"RSI分析: 值{rsi_analysis.get('rsi_value')}, 区间:{rsi_analysis.get('zone_text', '')}, 趋势:{rsi_analysis.get('trend_text', '')}, 背离:{rsi_analysis.get('divergence_text', '无')}")
+
+            # 布林带详情
+            if bollinger_analysis and 'percent_b' in bollinger_analysis:
+                prompt_parts.append(f"布林带分析: %B={bollinger_analysis.get('percent_b')}, 带宽={bollinger_analysis.get('bandwidth')}%, 价格位置:{bollinger_analysis.get('price_position_text', '')}, 变盘信号:{bollinger_analysis.get('squeeze_text', '')}")
+
             signal_map = {1: '买入', -1: '卖出', 0: '持有'}
-            for key, name in [('ma_signal', '均线'), ('rsi_signal', 'RSI'), ('bb_signal', '布林带'), ('macd_signal', 'MACD'), ('composite_signal', '综合')]:
+            for key, name in [('ma_signal', '均线'), ('rsi_signal', 'RSI'), ('bb_signal', '布林带'), ('macd_signal', 'MACD'), ('kdj_signal', 'KDJ'), ('composite_signal', '综合')]:
                 signal_val = latest_signals.get(key, 0)
                 prompt_parts.append(f"{name}: {signal_map.get(signal_val, '持有')}")
-            
+
             if sr_levels:
                 prompt_parts.append(f"支撑位: {sr_levels.get('support_1', 'N/A')}, 阻力位: {sr_levels.get('resistance_1', 'N/A')}")
         

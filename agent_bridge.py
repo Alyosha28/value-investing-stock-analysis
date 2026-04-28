@@ -436,10 +436,61 @@ def agent_technical(stock_code: str, cache: AgentCache) -> Dict:
         warnings.append('RSI超买区域，注意回调风险')
     elif latest.get('rsi_signal') == 1:
         warnings.append('RSI超卖区域，可能存在反弹机会')
+
+    # MACD 详细警告
+    macd_analysis = tech.get('macd_analysis', {})
     if latest.get('macd_signal') == -1:
         warnings.append('MACD死叉，短期趋势偏空')
     elif latest.get('macd_signal') == 1:
         warnings.append('MACD金叉，短期趋势偏多')
+    if macd_analysis.get('divergence') == 'bearish':
+        warnings.append('⚠️ MACD顶背离预警：上涨动能减弱，注意回调风险')
+    elif macd_analysis.get('divergence') == 'bullish':
+        warnings.append('✅ MACD底背离预警：下跌动能减弱，可能阶段性见底')
+
+    # KDJ 详细警告
+    kdj_analysis = tech.get('kdj_analysis', {})
+    if kdj_analysis.get('cross') == 'golden':
+        warnings.append('🟢 KDJ金叉：K线上穿D线，短期看多')
+    elif kdj_analysis.get('cross') == 'death':
+        warnings.append('🔴 KDJ死叉：K线下穿D线，短期看空')
+    if kdj_analysis.get('j_position') == '超买':
+        warnings.append('KDJ超买（J值>100），注意回调风险')
+    elif kdj_analysis.get('j_position') == '超卖':
+        warnings.append('KDJ超卖（J值<0），可能存在反弹机会')
+    if kdj_analysis.get('overall') == '高位钝化':
+        warnings.append('KDJ高位钝化，强势延续但追高风险加大')
+    elif kdj_analysis.get('overall') == '低位钝化':
+        warnings.append('KDJ低位钝化，弱势延续但可能酝酿反弹')
+
+    # RSI 详细警告
+    rsi_analysis = tech.get('rsi_analysis', {})
+    if rsi_analysis:
+        if rsi_analysis.get('divergence') in ('bearish', 'hidden_bearish'):
+            warnings.append('RSI顶背离预警：价格创出新高但RSI走弱，上涨动能减弱')
+        elif rsi_analysis.get('divergence') in ('bullish', 'hidden_bullish'):
+            warnings.append('RSI底背离预警：价格创出新低但RSI走强，下跌动能减弱')
+        if rsi_analysis.get('centerline_cross') == 'bullish':
+            warnings.append('RSI上穿50中轴，由弱转强信号')
+        elif rsi_analysis.get('centerline_cross') == 'bearish':
+            warnings.append('RSI下破50中轴，由强转弱信号')
+
+    # 布林带详细警告
+    bollinger_analysis = tech.get('bollinger_analysis', {})
+    if bollinger_analysis:
+        if bollinger_analysis.get('squeeze') == 'squeeze':
+            warnings.append('布林带极度收窄，变盘信号强烈')
+        elif bollinger_analysis.get('squeeze') == 'tightening':
+            warnings.append('布林带收窄中，可能面临方向选择')
+        if bollinger_analysis.get('walking_band') == 'walking_upper':
+            warnings.append('价格沿布林上轨运行，强势但追高风险大')
+        elif bollinger_analysis.get('walking_band') == 'walking_lower':
+            warnings.append('价格沿布林下轨运行，弱势但可能出现超跌反弹')
+        if bollinger_analysis.get('reversal') == 'bullish':
+            warnings.append('布林多头反转：触下轨后回升至中轨上方')
+        elif bollinger_analysis.get('reversal') == 'bearish':
+            warnings.append('布林空头反转：触上轨后回落至中轨下方')
+
     if tech.get('market_regime') == 'high_volatility_choppy':
         warnings.append('高波动震荡行情，建议降低仓位')
     result['risk_warnings'] = warnings if warnings else ['暂无特别技术风险信号']
@@ -953,6 +1004,10 @@ def agent_industry(stock_code: str, cache: AgentCache) -> Dict:
 
 
 def agent_financial_report(stock_code: str, cache: AgentCache) -> Dict:
+    """
+    财报解读专家 —— 三表交叉验证 + 盈利质量 + 会计操纵红旗 + 可持续性。
+    基于 .trae/agents/财报解读专家.md 框架实现。
+    """
     ctx = SharedDataContext.get_instance()
     ctx_result = ctx.get_agent_result(stock_code, 'financial_report')
     if ctx_result:
@@ -970,131 +1025,312 @@ def agent_financial_report(stock_code: str, cache: AgentCache) -> Dict:
         return _wrap_result('财报解读专家', stock_code, {'error': f'无法获取 {stock_code} 的数据'}, 0.0)
 
     financial = stock_data.get('financial', {})
-    red_flags = []
+    red_flags = []          # 红旗清单（按严重程度排序）
+    key_findings = []       # 核心发现
+    details = []            # 指标详情
 
-    earnings_quality_score = 50
-    operating_cf = financial.get('operating_cashflow')
-    net_profit = financial.get('net_profit')
-    cf_np_ratio = None
-    if operating_cf and net_profit and net_profit > 0:
-        cf_np_ratio = operating_cf / net_profit
-        if cf_np_ratio >= 1.0:
-            earnings_quality_score = 85
-        elif cf_np_ratio >= 0.7:
-            earnings_quality_score = 65
-        elif cf_np_ratio >= 0.5:
-            earnings_quality_score = 40
-            red_flags.append(f'经营现金流/净利润={cf_np_ratio:.2f}，盈利质量存疑')
+    # ── 辅助函数 ──
+    def _get(key):
+        v = financial.get(key)
+        if v is not None and v != 0:
+            return v
+        return None
+
+    def _pct(a, b):
+        """a / b * 100, 防除零"""
+        if a is not None and b and b != 0:
+            return a / b * 100
+        return None
+
+    def _ratio(a, b):
+        if a is not None and b and b != 0:
+            return a / b
+        return None
+
+    # ── 1. 盈利质量评估 (35%) ────────────────────────────────────
+    ocf = _get('operating_cashflow')
+    np = _get('net_profit')
+    rev = _get('revenue')
+    ar = _get('accounts_receivable')
+    inv = _get('inventory')
+    gross = _get('gross_margin')
+    net_mgn = _get('net_margin')
+
+    eq_score = 50
+    eq_details = []
+
+    # 1a) 经营现金流/净利润
+    cf_np = _ratio(ocf, np) if ocf is not None and np and np > 0 else None
+    if cf_np is not None:
+        if cf_np >= 1.0:
+            eq_details.append(f"OCF/净利润={cf_np:.2f} ≥ 1.0 ✓")
+        elif cf_np >= 0.7:
+            eq_details.append(f"OCF/净利润={cf_np:.2f}（可接受）")
+            eq_score -= 10
+        elif cf_np >= 0.5:
+            eq_details.append(f"OCF/净利润={cf_np:.2f}（偏低）")
+            eq_score -= 20
+            red_flags.append(('中', f"利润含金量不足: OCF/净利润={cf_np:.2f} < 0.7"))
         else:
-            earnings_quality_score = 20
-            red_flags.append(f'经营现金流/净利润={cf_np_ratio:.2f}，严重不匹配，利润可能虚增')
+            eq_details.append(f"OCF/净利润={cf_np:.2f}（严重不匹配）")
+            eq_score -= 35
+            red_flags.append(('高', f"利润可能虚增: OCF/净利润={cf_np:.2f} < 0.5"))
+    else:
+        eq_details.append("OCF/净利润: 数据不足")
 
-    revenue = financial.get('revenue')
-    if revenue and net_profit:
-        net_margin = net_profit / revenue * 100
-        if net_margin > 30 and (not operating_cf or operating_cf < net_profit * 0.5):
-            red_flags.append(f'净利率{net_margin:.1f}%偏高但现金流不支撑，需关注收入确认方式')
+    # 1b) 应收账款占比/趋势
+    if rev and rev > 0 and ar is not None:
+        ar_to_rev = ar / rev
+        eq_details.append(f"应收/营收={ar_to_rev:.2%}")
+        if ar_to_rev > 0.5:
+            eq_score -= 15
+            red_flags.append(('中', f"应收账款/营收={ar_to_rev:.1%} > 50%，回款风险高"))
+        elif ar_to_rev > 0.3:
+            eq_score -= 5
+    else:
+        eq_details.append("应收/营收: 数据不足")
 
-    manipulation_score = 80
-    current_ratio = financial.get('current_ratio')
-    debt_to_equity = financial.get('debt_to_equity')
-    if debt_to_equity and debt_to_equity > 3:
-        manipulation_score -= 20
-        red_flags.append(f'资产负债率偏高(D/E={debt_to_equity:.2f})，关注债务风险')
-    if current_ratio and current_ratio < 1:
-        manipulation_score -= 15
-        red_flags.append(f'流动比率仅{current_ratio:.2f}，短期偿债压力较大')
+    # 1c) 存货占比
+    if rev and rev > 0 and inv is not None:
+        inv_to_rev = inv / rev
+        eq_details.append(f"存货/营收={inv_to_rev:.2%}")
+        if inv_to_rev > 0.5:
+            eq_score -= 10
+            red_flags.append(('中', f"存货/营收={inv_to_rev:.1%} > 50%，存货积压风险"))
 
-    gross_margin = financial.get('gross_margin')
-    if gross_margin and gross_margin > 60 and (not operating_cf or operating_cf < net_profit * 0.6 if net_profit else False):
-        manipulation_score -= 10
-        red_flags.append(f'毛利率{gross_margin:.1f}%异常偏高且现金流不匹配，需验证收入真实性')
+    # 1d) 毛利率异常
+    if gross is not None and net_mgn is not None:
+        if gross > 70 and net_mgn < 10:
+            eq_score -= 10
+            red_flags.append(('中', f"毛利率{gross:.1f}%极高但净利率仅{net_mgn:.1f}%，费用结构异常"))
 
-    cross_validation = '通过'
-    cross_score = 80
-    if operating_cf and net_profit:
-        if operating_cf < net_profit * 0.5:
-            cross_validation = '不通过'
-            cross_score = 30
-        elif operating_cf < net_profit * 0.7:
-            cross_validation = '存疑'
-            cross_score = 55
+    # 1e) 净利率 vs OCF 匹配度（净利率高但现金流差 → 红旗）
+    if net_mgn and cf_np is not None and net_mgn > 20 and cf_np < 0.6:
+        eq_score -= 10
+        red_flags.append(('高', f"高净利率({net_mgn:.1f}%)但OCF/净利润({cf_np:.2f})极低，收入确认激进"))
 
-    sustainability_score = 50
-    roe = financial.get('roe')
-    roe_history = financial.get('roe_history', [])
-    if roe:
-        if roe > 15:
-            sustainability_score += 20
+    earnings_quality_score = max(0, min(100, eq_score))
+    details.append(f"盈利质量: {earnings_quality_score}/100 ({'; '.join(eq_details)})")
+
+    # ── 2. 会计操纵红旗 (25%) ─────────────────────────────────
+    manip_score = 80
+    manip_details = []
+
+    # 2a) 商誉/总资产 > 30%
+    goodwill = _get('goodwill')
+    ta = _get('total_assets')
+    if goodwill and ta and ta > 0:
+        gw_ratio = goodwill / ta * 100
+        manip_details.append(f"商誉/总资产={gw_ratio:.1f}%")
+        if gw_ratio > 30:
+            manip_score -= 25
+            red_flags.append(('高', f"商誉/总资产={gw_ratio:.1f}% > 30%，减值风险极高"))
+        elif gw_ratio > 15:
+            manip_score -= 10
+            red_flags.append(('低', f"商誉/总资产={gw_ratio:.1f}%，关注减值"))
+
+    # 2b) 应收账款/营收激增（替代性红旗下单项）
+    if ar is not None and rev and rev > 0:
+        ar_ratio = ar / rev
+        if ar_ratio > 0.4:
+            red_flags.append(('中', f"应收/营收={ar_ratio:.1%}，收入确认可能激进"))
+
+    # 2c) 固定资产投资 vs 折旧（需要多期数据）
+    fixed = _get('fixed_assets')
+    capex = _get('investing_cashflow')
+    if capex is not None and abs(capex) > 0 and fixed is not None and fixed > 0:
+        capex_ratio = abs(capex) / fixed
+        if capex_ratio > 0.5:
+            manip_score -= 10
+            red_flags.append(('中', f"资本支出/固定资产={capex_ratio:.1%}，关注费用资本化风险"))
+
+    # 2d) 负债过高
+    de = _get('debt_to_equity')
+    if de is not None:
+        if de > 3:
+            manip_score -= 20
+            red_flags.append(('高', f"资产负债率过高(D/E={de:.2f})，偿债风险"))
+        elif de > 1.5:
+            manip_score -= 5
+        manip_details.append(f"D/E={de:.2f}")
+
+    # 2e) 流动比率过低
+    cr = _get('current_ratio')
+    if cr is not None:
+        if cr < 0.8:
+            manip_score -= 15
+            red_flags.append(('高', f"流动比率仅{cr:.2f} < 0.8，短期偿债压力大"))
+        elif cr < 1.0:
+            manip_score -= 8
+            red_flags.append(('中', f"流动比率{cr:.2f} < 1.0，流动性紧张"))
+        manip_details.append(f"流动比率={cr:.2f}")
+
+    manipulation_score = max(0, min(100, manip_score))
+    details.append(f"操纵风险: {manipulation_score}/100 ({'; '.join(manip_details) if manip_details else '无'})")
+
+    # ── 3. 三表交叉验证 (25%) ─────────────────────────────────
+    cv_score = 80
+    cv_details = []
+
+    # 3a) OCF vs 净利润
+    if cf_np is not None:
+        if cf_np < 0.3:
+            cv_score = 15
+            cv_details.append(f"OCF远低于净利润(OCF/NP={cf_np:.2f}) — 不通过")
+            red_flags.append(('高', f"三表不一致: OCF仅净利润的{cf_np:.0%}，利润可能虚增"))
+        elif cf_np < 0.5:
+            cv_score = 30
+            cv_details.append(f"OCF低于净利润(OCF/NP={cf_np:.2f}) — 存疑")
+        elif cf_np < 0.7:
+            cv_score = 55
+            cv_details.append(f"OCF/净利润={cf_np:.2f} — 基本可接受")
+        else:
+            cv_details.append(f"OCF/净利润={cf_np:.2f} ≥ 0.7 — 通过 ✓")
+
+    # 3b) 营收 vs 应收（多期验证：应收增速 > 营收增速 → 红旗）
+    if ar is not None and rev and rev > 0:
+        ar_pct = ar / rev
+        if ar_pct > 0.3:
+            cv_score -= 15
+            cv_details.append(f"应收/营收={ar_pct:.1%} > 30%，回款质量存疑")
+
+    # 3c) 营收 vs 存货
+    if inv is not None and rev and rev > 0:
+        inv_pct = inv / rev
+        if inv_pct > 0.4 and ar_pct and ar_pct > 0.3:
+            cv_score -= 10
+            cv_details.append(f"存货+应收双高(存货/营收={inv_pct:.1%})")
+
+    cross_validation = '通过' if cv_score >= 60 else ('存疑' if cv_score >= 30 else '不通过')
+    cross_score = max(0, min(100, cv_score))
+    details.append(f"三表交叉: {cross_score}/100 ({'; '.join(cv_details) if cv_details else '数据不足'})")
+
+    # ── 4. 可持续性 (15%) ────────────────────────────────────
+    sus_score = 50
+    sus_details = []
+
+    # 4a) ROE 水平
+    roe = _get('roe')
+    roe_h = financial.get('roe_history', [])
+    if roe is not None:
+        if roe > 20:
+            sus_score += 20
+            sus_details.append(f"ROE={roe:.1f}%（优秀）")
+        elif roe > 15:
+            sus_score += 15
+            sus_details.append(f"ROE={roe:.1f}%（良好）")
         elif roe > 10:
-            sustainability_score += 10
+            sus_score += 5
+            sus_details.append(f"ROE={roe:.1f}%（一般）")
         elif roe < 5:
-            sustainability_score -= 15
+            sus_score -= 15
+            sus_details.append(f"ROE={roe:.1f}%（偏低）")
+            red_flags.append(('低', f"ROE仅{roe:.1f}%，盈利基础薄弱"))
+        else:
+            sus_details.append(f"ROE={roe:.1f}%")
 
-    if len(roe_history) >= 3:
-        if all(r > 10 for r in roe_history[:3]):
-            sustainability_score += 15
-        elif any(r < 0 for r in roe_history[:3]):
-            sustainability_score -= 20
-            red_flags.append('ROE历史出现负值，盈利可持续性存疑')
+    # 4b) ROE 历史稳定性
+    if len(roe_h) >= 3:
+        if all(r and r > 10 for r in roe_h[:3]):
+            sus_score += 15
+            sus_details.append("ROE近3年稳定>10%")
+        elif any(r and r < 0 for r in roe_h[:3]):
+            sus_score -= 20
+            red_flags.append(('高', "ROE历史出现负值，盈利可持续性存疑"))
+        elif any(r and r < 5 for r in roe_h[:3]):
+            sus_score -= 10
 
-    revenue_history = financial.get('revenue_history', [])
-    if len(revenue_history) >= 2:
+    # 4c) 营收增长趋势
+    rev_h = financial.get('revenue_history', [])
+    if len(rev_h) >= 2:
         growth_rates = []
-        for i in range(min(len(revenue_history) - 1, 4)):
-            if revenue_history[i + 1] and revenue_history[i] and revenue_history[i] > 0:
-                growth_rates.append((revenue_history[i] - revenue_history[i + 1]) / revenue_history[i + 1] * 100)
+        for i in range(min(len(rev_h) - 1, 4)):
+            if rev_h[i + 1] and rev_h[i] and rev_h[i] > 0:
+                growth_rates.append(rev_h[i] / rev_h[i + 1] - 1)
         if growth_rates:
-            avg_growth = sum(growth_rates) / len(growth_rates)
-            if avg_growth > 30:
-                sustainability_score += 10
-            elif avg_growth < 0:
-                sustainability_score -= 15
-                red_flags.append(f'营收平均增速{avg_growth:.1f}%为负，增长不可持续')
+            avg_g = sum(growth_rates) / len(growth_rates) * 100
+            if avg_g > 30:
+                sus_score += 10
+                sus_details.append(f"营收高增长({avg_g:.0f}%)")
+            elif avg_g > 10:
+                sus_details.append(f"营收稳健增长({avg_g:.0f}%)")
+            elif avg_g < -5:
+                sus_score -= 15
+                sus_details.append(f"营收下滑({avg_g:.1f}%)")
+                red_flags.append(('中', f"营收持续下滑({avg_g:.1f}%)，基本面恶化"))
 
-    sustainability_score = max(0, min(100, sustainability_score))
+    # 4d) 经营现金流稳定性
+    fcf_h = financial.get('fcf_history', [])
+    if len(fcf_h) >= 3:
+        positive_years = sum(1 for f in fcf_h[:3] if f and f > 0)
+        if positive_years >= 2:
+            sus_score += 10
+            sus_details.append(f"近3年{positive_years}年经营现金流为正")
+        elif positive_years <= 1:
+            sus_score -= 10
+            red_flags.append(('中', f"近3年仅{positive_years}年经营现金流为正，造血能力不足"))
 
-    overall_quality = (
-        earnings_quality_score * 0.35 +
-        manipulation_score * 0.25 +
-        cross_score * 0.25 +
-        sustainability_score * 0.15
-    )
+    sustainability_score = max(0, min(100, sus_score))
+    details.append(f"可持续性: {sustainability_score}/100 ({'; '.join(sus_details) if sus_details else '数据有限'})")
 
-    if overall_quality >= 80:
+    # ── 5. 综合评分 ───────────────────────────────────────────
+    overall = (earnings_quality_score * 0.35 +
+               manipulation_score * 0.25 +
+               cross_score * 0.25 +
+               sustainability_score * 0.15)
+
+    # ── 6. 分类等级 ───────────────────────────────────────────
+    if overall >= 80:
         quality_level = '优秀'
-    elif overall_quality >= 60:
+    elif overall >= 60:
         quality_level = '良好'
-    elif overall_quality >= 40:
+    elif overall >= 40:
         quality_level = '一般'
     else:
         quality_level = '较差'
 
     if sustainability_score >= 70:
-        sustainability_level = '高'
+        sus_level = '高'
     elif sustainability_score >= 45:
-        sustainability_level = '中'
+        sus_level = '中'
     else:
-        sustainability_level = '低'
+        sus_level = '低'
 
-    key_findings = []
-    if cf_np_ratio is not None:
-        if cf_np_ratio >= 1.0:
-            key_findings.append('经营现金流充沛，利润含金量高')
-        else:
-            key_findings.append(f'经营现金流/净利润={cf_np_ratio:.2f}，利润含金量不足')
-    if roe and roe > 15:
-        key_findings.append(f'ROE={roe:.1f}%，资本回报率优秀')
-    elif roe and roe < 5:
-        key_findings.append(f'ROE={roe:.1f}%，资本回报率偏低')
+    # ── 7. 关键发现 ─────────────────────────────────────────
     if not key_findings:
-        key_findings.append('数据有限，无法得出明确结论')
+        if cf_np is not None and cf_np >= 1.0:
+            key_findings.append('经营现金流充沛，利润含金量高')
+        if roe is not None and roe > 15:
+            key_findings.append(f'ROE={roe:.1f}%，资本回报率优秀')
+        if not key_findings:
+            key_findings.append('数据有限，无法得出明确结论')
 
     if not red_flags:
-        red_flags.append('暂未识别重大财务红旗信号')
+        red_flags.append(('低', '暂未识别重大财务红旗信号'))
 
+    # 红旗按严重程度排序
+    severity_order = {'高': 0, '中': 1, '低': 2}
+    red_flags_sorted = sorted(red_flags, key=lambda x: severity_order.get(x[0], 3))
+
+    # ── 8. 建议 ────────────────────────────────────────────
+    recommendations = []
+    if overall < 40:
+        recommendations.append('财报质量风险较高，建议回避或深入尽调')
+    elif overall < 60:
+        recommendations.append('财报质量一般，重点跟踪应收账款与现金流变化')
+    else:
+        recommendations.append('财报质量良好，可正常纳入分析范围')
+
+    high_reds = [r for r, _ in red_flags_sorted if r == '高']
+    if high_reds:
+        recommendations.append(f'存在{len(high_reds)}项高风险红旗，需重点核实')
+
+    if not key_findings:
+        key_findings.append('无足够数据形成独立判断')
+
+    # ── 结果构建 ─────────────────────────────────────────────
     result = {
-        'overall_quality_score': round(overall_quality, 1),
+        'overall_quality_score': round(overall, 1),
         'quality_level': quality_level,
         'sub_scores': {
             'earnings_quality': earnings_quality_score,
@@ -1102,21 +1338,30 @@ def agent_financial_report(stock_code: str, cache: AgentCache) -> Dict:
             'cross_validation': cross_score,
             'sustainability': sustainability_score,
         },
-        'red_flags': red_flags,
-        'cross_validation': cross_validation,
-        'sustainability': sustainability_level,
-        'key_findings': key_findings,
-        'key_metrics': {
-            'cf_to_np_ratio': round(cf_np_ratio, 2) if cf_np_ratio else None,
-            'roe': roe,
-            'gross_margin': gross_margin,
-            'net_margin': round(net_profit / revenue * 100, 2) if revenue and net_profit and revenue > 0 else None,
-            'current_ratio': current_ratio,
-            'debt_to_equity': debt_to_equity,
+        'red_flags': [f"[{s}] {d}" for s, d in red_flags_sorted],
+        'red_flags_count': {
+            'high': sum(1 for s, _ in red_flags_sorted if s == '高'),
+            'medium': sum(1 for s, _ in red_flags_sorted if s == '中'),
+            'low': sum(1 for s, _ in red_flags_sorted if s == '低'),
         },
+        'cross_validation': cross_validation,
+        'sustainability': sus_level,
+        'key_findings': key_findings,
+        'recommendations': recommendations,
+        'key_metrics': {
+            'cf_to_np_ratio': round(cf_np, 2) if cf_np else None,
+            'roe': roe,
+            'gross_margin': gross,
+            'net_margin': round(net_mgn, 2) if net_mgn else None,
+            'current_ratio': cr,
+            'debt_to_equity': de,
+            'accounts_receivable_to_revenue': round(ar / rev, 4) if rev and rev > 0 and ar is not None else None,
+            'goodwill_to_assets': round(goodwill / ta * 100, 2) if goodwill and ta and ta > 0 else None,
+        },
+        'details': details,
     }
 
-    confidence = min(overall_quality / 100, 0.9)
+    confidence = min(overall / 100, 0.9)
     wrapped = _wrap_result('财报解读专家', stock_code, result, confidence)
     cache.set(stock_code, 'financial_report', wrapped)
     ctx.set_agent_result(stock_code, 'financial_report', wrapped)
@@ -1244,21 +1489,26 @@ def format_text(wrapped: Dict) -> str:
             lines.append(f'  - {r}')
 
     elif agent == '财报解读专家':
-        lines.append(f'盈利质量评分: {result.get("overall_quality_score", 0)} ({result.get("quality_level", "N/A")})')
-        lines.append(f'三表验证: {result.get("cross_validation", "N/A")}')
-        lines.append(f'业绩可持续性: {result.get("sustainability", "N/A")}')
+        lines.append(f'财报质量: {result.get("overall_quality_score", 0)}/100 ({result.get("quality_level", "N/A")})')
+        lines.append(f'三表验证: {result.get("cross_validation", "N/A")}  |  可持续性: {result.get("sustainability", "N/A")}')
         lines.append('')
         lines.append('子维度评分:')
         for k, v in result.get('sub_scores', {}).items():
             lines.append(f'  {k}: {v}')
         lines.append('')
+        lines.append('红旗统计:')
+        rc = result.get('red_flags_count', {})
+        lines.append(f'  高: {rc.get("high", 0)}  中: {rc.get("medium", 0)}  低: {rc.get("low", 0)}')
+        for r in result.get('red_flags', []):
+            lines.append(f'  ⚠ {r}')
+        lines.append('')
         lines.append('关键发现:')
         for f in result.get('key_findings', []):
             lines.append(f'  - {f}')
         lines.append('')
-        lines.append('红旗信号:')
-        for r in result.get('red_flags', []):
-            lines.append(f'  ⚠ {r}')
+        lines.append('建议:')
+        for r in result.get('recommendations', []):
+            lines.append(f'  → {r}')
 
     elif agent in ('完整个股分析', '投资决策'):
         if agent == '投资决策':

@@ -5,7 +5,7 @@ import logging
 from typing import Dict, Optional, Any
 import os
 import sys
-from config import SystemConfig
+from config import SystemConfig, TechnicalConfig
 from logger_config import logger
 
 if sys.platform == 'win32':
@@ -992,42 +992,154 @@ class ReportGenerator:
             composite_score = technical_result.get('composite_score', 0)
             signal_strength = technical_result.get('signal_strength', '无法评估')
             market_regime = technical_result.get('market_regime', 'unknown')
-            
-            report.append(f"- 综合评分: {safe_format(composite_score)}/100")
-            report.append(f"- 信号强度: {signal_strength}")
-            report.append(f"- 市场状态: {market_regime}")
-            
+
+            regime_map = {
+                'strong_uptrend': '强势上涨',
+                'moderate_uptrend': '温和上涨',
+                'strong_downtrend': '弱势下跌',
+                'high_volatility_choppy': '高波动震荡',
+                'range_bound': '区间震荡',
+            }
+
+            report.append(f"- **综合评分**: {safe_format(composite_score)}/100")
+            report.append(f"- **信号强度**: {signal_strength}")
+            report.append(f"- **市场状态**: {regime_map.get(market_regime, market_regime)}")
+
+            # --- 六维度评分 ---
             dimension_scores = technical_result.get('dimension_scores', {})
             if dimension_scores:
-                report.append("\n维度评分:")
-                dimension_names = {
-                    'trend': '趋势强度',
-                    'momentum': '动量指标',
-                    'volatility': '波动率状态',
-                    'volume': '量价配合',
-                    'support_resistance': '支撑阻力',
-                    'relative_strength': '相对强度'
-                }
-                for key, name in dimension_names.items():
-                    if key in dimension_scores:
-                        report.append(f"  {name}: {safe_format(dimension_scores[key])}/100")
-            
+                report.append("\n### 9.1 六维度评分")
+                report.append("")
+                report.append("| 维度 | 得分 | 权重 | 加权得分 |")
+                report.append("|------|------|------|----------|")
+                dimensions = [
+                    ('trend', '趋势强度', TechnicalConfig.TREND_WEIGHT),
+                    ('momentum', '动量指标', TechnicalConfig.MOMENTUM_WEIGHT),
+                    ('volatility', '波动率状态', TechnicalConfig.VOLATILITY_WEIGHT),
+                    ('volume', '量价配合', TechnicalConfig.VOLUME_WEIGHT),
+                    ('support_resistance', '支撑阻力', TechnicalConfig.SUPPORT_RESISTANCE_WEIGHT),
+                    ('relative_strength', '相对强度', TechnicalConfig.RELATIVE_STRENGTH_WEIGHT),
+                ]
+                for key, name, weight in dimensions:
+                    val = dimension_scores.get(key, 0)
+                    report.append(f"| {name} | **{round(val)}**/100 | {weight*100:.0f}% | {val*weight:.1f} |")
+
+            # --- 详细技术指标描述 ---
+            detailed = technical_result.get('detailed_descriptions', {})
+            if detailed:
+                report.append("\n### 9.2 技术指标详情")
+                report.append("")
+                sections = [
+                    ('ma', '📊 移动平均线'),
+                    ('macd', '📈 MACD'),
+                    ('kdj', '📉 KDJ'),
+                    ('rsi', '📊 RSI 相对强弱指标'),
+                    ('bollinger', '📊 布林带'),
+                ]
+                for key, title in sections:
+                    desc_text = detailed.get(key)
+                    if desc_text:
+                        report.append(f"**{title}**")
+                        report.append("")
+                        report.append(f"> {desc_text}")
+                        report.append("")
+
+            # --- KDJ 详细分析 ---
+            kdj_analysis = technical_result.get('kdj_analysis', {})
+            if kdj_analysis and 'k' in kdj_analysis:
+                report.append("### 9.3 KDJ 指标分析")
+                report.append("")
+                report.append(f"| 项目 | 数值 | 判断 |")
+                report.append(f"|------|------|------|")
+                report.append(f"| K值 | **{kdj_analysis.get('k', 'N/A')}** | — |")
+                report.append(f"| D值 | **{kdj_analysis.get('d', 'N/A')}** | — |")
+                report.append(f"| J值 | **{kdj_analysis.get('j', 'N/A')}** | {kdj_analysis.get('j_position', '')} |")
+                report.append(f"| 交叉信号 | — | {kdj_analysis.get('cross_text', '无')} |")
+                report.append(f"| 综合判断 | — | {kdj_analysis.get('overall_text', '')} |")
+                report.append("")
+
+            # --- MACD 详细分析 ---
+            macd_analysis = technical_result.get('macd_analysis', {})
+            if macd_analysis and 'macd_value' in macd_analysis:
+                report.append("### 9.4 MACD 指标分析")
+                report.append("")
+                report.append(f"| 项目 | 数值 | 判断 |")
+                report.append(f"|------|------|------|")
+                report.append(f"| MACD快线 | **{macd_analysis.get('macd_value', 'N/A')}** | {macd_analysis.get('cross_text', '')} |")
+                report.append(f"| 信号慢线 | **{macd_analysis.get('signal_value', 'N/A')}** | {macd_analysis.get('zero_text', '')} |")
+                report.append(f"| 柱状图趋势 | — | **{macd_analysis.get('histogram_text', '')}** |")
+                report.append(f"| 柱状图连续 | — | {macd_analysis.get('histogram_trend', '')} |")
+                report.append(f"| 背离检测 | — | **{macd_analysis.get('divergence_text', '无明显背离')}** |")
+                report.append("")
+
+            # --- RSI 详细分析 ---
+            rsi_analysis = technical_result.get('rsi_analysis', {})
+            if rsi_analysis and 'rsi_value' in rsi_analysis:
+                report.append("### 9.5 RSI 指标分析")
+                report.append("")
+                report.append("| 项目 | 数值 | 判断 |")
+                report.append("|------|------|------|")
+                report.append(f"| RSI值 | **{rsi_analysis.get('rsi_value', 'N/A')}** | {rsi_analysis.get('zone_text', '')} |")
+                report.append(f"| 趋势方向 | — | **{rsi_analysis.get('trend_text', '')}** |")
+                report.append(f"| 中轴穿越 | — | {rsi_analysis.get('centerline_cross_text', '无')} |")
+                report.append(f"| 背离检测 | — | **{rsi_analysis.get('divergence_text', '无明显背离信号')}** |")
+                report.append("")
+
+            # --- 布林带详细分析 ---
+            bollinger_analysis = technical_result.get('bollinger_analysis', {})
+            if bollinger_analysis and 'percent_b' in bollinger_analysis:
+                report.append("### 9.6 布林带指标分析")
+                report.append("")
+                report.append("| 项目 | 数值 | 判断 |")
+                report.append("|------|------|------|")
+                report.append(f"| 上轨/中轨/下轨 | **{bollinger_analysis.get('upper_band', 'N/A')} / {bollinger_analysis.get('middle_band', 'N/A')} / {bollinger_analysis.get('lower_band', 'N/A')}** | — |")
+                report.append(f"| %B 指标 | **{bollinger_analysis.get('percent_b', 'N/A')}** | {bollinger_analysis.get('price_position_text', '')} |")
+                report.append(f"| 带宽 | **{bollinger_analysis.get('bandwidth', 'N/A')}%** | {bollinger_analysis.get('squeeze_text', '')} |")
+                report.append(f"| 轨道运行 | — | {bollinger_analysis.get('walking_text', '无')} |")
+                report.append(f"| 反转信号 | — | **{bollinger_analysis.get('reversal_text', '无')}** |")
+                report.append(f"| 中轨倾斜 | — | {bollinger_analysis.get('band_tilt_text', '')} |")
+                report.append("")
+
+            # --- 支撑阻力位 ---
             sr_levels = technical_result.get('support_resistance', {})
             if sr_levels:
-                report.append("\n支撑阻力位:")
-                report.append(f"  阻力位2: {safe_format(sr_levels.get('resistance_2'))}")
-                report.append(f"  阻力位1: {safe_format(sr_levels.get('resistance_1'))}")
-                report.append(f"  枢轴点: {safe_format(sr_levels.get('pivot'))}")
-                report.append(f"  支撑位1: {safe_format(sr_levels.get('support_1'))}")
-                report.append(f"  支撑位2: {safe_format(sr_levels.get('support_2'))}")
-            
+                report.append("### 9.7 关键支撑阻力位")
+                report.append("")
+                report.append("```")
+                r2 = sr_levels.get('resistance_2')
+                r1 = sr_levels.get('resistance_1')
+                pivot = sr_levels.get('pivot')
+                s1 = sr_levels.get('support_1')
+                s2 = sr_levels.get('support_2')
+                if r2: report.append(f"阻力 2:  {r2:.2f}  ────")
+                if r1: report.append(f"阻力 1:  {r1:.2f}  ────")
+                report.append(f"当前价:  {sr_levels.get('current_price', 'N/A'):.2f}  ●")
+                if pivot: report.append(f"枢纽点:  {pivot:.2f}  ──── 多空分水岭")
+                if s1: report.append(f"支撑 1:  {s1:.2f}  ────")
+                if s2: report.append(f"支撑 2:  {s2:.2f}  ────")
+                report.append("```")
+                report.append("")
+
+            # --- 交易信号汇总 ---
             latest_signals = technical_result.get('latest_signals', {})
             if latest_signals:
-                report.append("\n交易信号:")
-                signal_map = {1: '买入', -1: '卖出', 0: '持有'}
-                for key, name in [('ma_signal', '移动平均线'), ('rsi_signal', 'RSI'), ('bb_signal', '布林带'), ('macd_signal', 'MACD'), ('composite_signal', '综合')]:
+                report.append("### 9.8 交易信号汇总")
+                report.append("")
+                report.append("| 指标 | 信号 | 含义 |")
+                report.append("|------|------|------|")
+                signal_details = [
+                    ('ma_signal', 'MA均线', 'MA5与MA20关系'),
+                    ('rsi_signal', 'RSI', '超买/超卖区间'),
+                    ('bb_signal', '布林带', '价格与轨道关系'),
+                    ('macd_signal', 'MACD', '快慢线交叉'),
+                    ('kdj_signal', 'KDJ', 'K值与D值交叉'),
+                    ('composite_signal', '综合信号', '以上信号加权')
+                ]
+                signal_map = {1: '🟢 买入', -1: '🔴 卖出', 0: '⚪ 持有'}
+                for key, name, desc in signal_details:
                     signal_val = latest_signals.get(key, 0)
-                    report.append(f"  {name}: {signal_map.get(signal_val, '持有')}")
+                    report.append(f"| {name} | {signal_map.get(signal_val, '⚪ 持有')} | {desc} |")
+                report.append("")
         else:
             report.append("- 无数据")
     
@@ -1073,27 +1185,27 @@ class ReportGenerator:
             historical_data = stock_data.get('historical')
             if historical_data is None or historical_data.empty:
                 return None
-            
+
             stock_info = stock_data.get('info', {})
             stock_name = stock_info.get('stock_name', '未知股票')
             stock_code = stock_info.get('stock_code', '未知代码')
-            
-            plt.figure(figsize=(15, 12))
-            
-            ax1 = plt.subplot(3, 1, 1)
+
+            plt.figure(figsize=(15, 14))
+
+            ax1 = plt.subplot(4, 1, 1)
             ax1.plot(historical_data.index, historical_data['Close'], label='收盘价', color='blue')
-            
+
             if technical_result and 'ma' in technical_result['indicators']:
                 ma_data = technical_result['indicators']['ma']
                 for key, ma_series in ma_data.items():
                     ax1.plot(historical_data.index, ma_series, label=key.upper())
-            
+
             ax1.set_title(f'{stock_name}（{stock_code}）价格走势')
             ax1.set_ylabel('价格')
             ax1.legend()
             ax1.grid(True)
-            
-            ax2 = plt.subplot(3, 1, 2)
+
+            ax2 = plt.subplot(4, 1, 2)
             if technical_result and 'rsi' in technical_result['indicators']:
                 rsi = technical_result['indicators']['rsi']
                 ax2.plot(historical_data.index, rsi, label='RSI', color='purple')
@@ -1103,30 +1215,47 @@ class ReportGenerator:
                 ax2.set_ylabel('RSI')
                 ax2.legend()
                 ax2.grid(True)
-            
-            ax3 = plt.subplot(3, 1, 3)
+
+            ax3 = plt.subplot(4, 1, 3)
             if technical_result and 'macd' in technical_result['indicators']:
                 macd = technical_result['indicators']['macd']
                 ax3.plot(historical_data.index, macd['macd_line'], label='MACD', color='blue')
                 ax3.plot(historical_data.index, macd['signal_line'], label='Signal', color='red')
-                
+
                 histogram = macd['histogram']
                 colors = ['green' if val >= 0 else 'red' for val in histogram]
                 ax3.bar(historical_data.index, histogram, color=colors, alpha=0.5, label='Histogram')
-                
+
                 ax3.set_title('MACD 指标')
                 ax3.set_ylabel('MACD')
                 ax3.legend()
                 ax3.grid(True)
-            
+
+            ax4 = plt.subplot(4, 1, 4)
+            if technical_result and 'kdj' in technical_result['indicators']:
+                kdj = technical_result['indicators']['kdj']
+                if 'k' in kdj and not kdj['k'].empty:
+                    ax4.plot(historical_data.index, kdj['k'], label='K', color='blue')
+                    ax4.plot(historical_data.index, kdj['d'], label='D', color='red')
+                    ax4.plot(historical_data.index, kdj['j'], label='J', color='green', linestyle='--')
+                    ax4.axhline(100, linestyle='--', color='gray', alpha=0.3)
+                    ax4.axhline(0, linestyle='--', color='gray', alpha=0.3)
+                    ax4.axhline(80, linestyle=':', color='red', alpha=0.3)
+                    ax4.axhline(20, linestyle=':', color='green', alpha=0.3)
+
+                    ax4.set_title('KDJ 指标')
+                    ax4.set_ylabel('KDJ')
+                    ax4.legend()
+                    ax4.grid(True)
+
             plt.tight_layout()
-            
+
             chart_path = os.path.join(self.output_dir, f'{stock_code}_{stock_name}_技术分析.png')
             plt.savefig(chart_path)
             plt.close()
-            
+
             return chart_path
-            
+
         except Exception as e:
             logger.error(f"生成图表失败: {e}")
             return None
