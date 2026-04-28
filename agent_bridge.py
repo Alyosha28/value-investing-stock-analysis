@@ -51,6 +51,7 @@ AGENT_MAP = {
     'risk': '风控官',
     'industry': '行业分析师',
     'financial_report': '财报解读专家',
+    'trend': '趋势分析师',
     'full': '完整个股分析',
     'decision': '投资决策',
     'position': '持仓分析师',
@@ -1003,6 +1004,73 @@ def agent_industry(stock_code: str, cache: AgentCache) -> Dict:
     return wrapped
 
 
+def agent_trend(stock_code: str, cache: AgentCache,
+                period: str = 'daily') -> Dict:
+    """
+    趋势分析师 —— 多周期K线趋势分析、拐点检测、趋势预测。
+
+    复用 TechnicalAnalyzer 的指标计算，叠加 Zigzag 拐点检测和统计预测。
+    """
+    from trend_analyzer import TrendAnalyzer
+
+    # 缓存检查
+    cache_key = f'trend_{period}'
+    cached = cache.get(stock_code, cache_key)
+    if cached:
+        return cached
+
+    ta = TrendAnalyzer()
+    result = ta.analyze(stock_code, period=period, output_format='png')
+
+    if 'error' in result:
+        return _wrap_result('趋势分析师', stock_code, result, 0.0)
+
+    summary = result.get('trend_summary', {})
+    direction = summary.get('direction', 'unknown')
+    strength = summary.get('strength', 'unknown')
+    score = summary.get('score', 50)
+
+    mtf = result.get('multi_timeframe', {})
+    alignment = mtf.get('alignment', {})
+    signal_strength = alignment.get('signal_strength', 'unknown')
+
+    tps = result.get('turning_points', [])
+    pred = result.get('prediction', {})
+    signals = result.get('signals', {})
+
+    # 格式化输出
+    period_label = {'daily': '日K', 'weekly': '周K', 'monthly': '月K'}.get(period, period)
+
+    text_parts = [
+        f"【趋势分析】{result.get('stock_name', stock_code)}",
+        f"周期：{period_label} | 趋势方向：{direction} | 强度：{strength} | 评分：{score}",
+    ]
+    if alignment:
+        text_parts.append(
+            f"多周期信号：日K={alignment.get('daily','-')} "
+            f"周K={alignment.get('weekly','-')} 月K={alignment.get('monthly','-')}"
+        )
+        text_parts.append(f"共振强度：{signal_strength}")
+    if tps:
+        top_tps = [f"{tp['date']}{tp['type']}" for tp in tps[:3]]
+        text_parts.append(f"关键拐点：{' '.join(top_tps)}")
+    if pred:
+        text_parts.append(
+            f"趋势预测：{pred.get('direction','未知')} "
+            f"(置信度:{pred.get('confidence_score',0)})"
+        )
+    if signals:
+        text_parts.append(f"综合信号：{signals.get('composite','neutral')}")
+
+    result['summary_text'] = '\n'.join(text_parts)
+    result['environment'] = summary.get('regime', '未知')
+    confidence = score / 100.0
+
+    wrapped = _wrap_result('趋势分析师', stock_code, result, confidence)
+    cache.set(stock_code, cache_key, wrapped)
+    return wrapped
+
+
 def agent_financial_report(stock_code: str, cache: AgentCache) -> Dict:
     """
     财报解读专家 —— 三表交叉验证 + 盈利质量 + 会计操纵红旗 + 可持续性。
@@ -1374,6 +1442,7 @@ AGENT_FUNCTIONS = {
     'technical': agent_technical,
     'macro': agent_macro,
     'risk': agent_risk,
+    'trend': agent_trend,
     'industry': agent_industry,
     'financial_report': agent_financial_report,
     'full': agent_full,

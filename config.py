@@ -66,6 +66,47 @@ class DCFConfig:
     MARGIN_OF_SAFETY_CONSIDER = 0.15
 
 
+class TrendConfig:
+    """趋势分析配置参数"""
+    # ── Zigzag拐点检测 ──
+    ZIGZAG_REVERSAL_PCT = 0.05          # 主算法：价格反向波动≥5%确认拐点
+    ZIGZAG_LEFT_BARS = 5                # 辅助验证：局部极值左窗
+    ZIGZAG_RIGHT_BARS = 5               # 辅助验证：局部极值右窗
+    TURNING_POINT_MIN_INTERVAL = 5      # 相邻拐点最小K线间隔
+    PIVOT_CONFIRM_VOLUME_RATIO = 1.5    # 拐点处成交量需≥均量的1.5倍
+
+    # ── 预测信号仲裁 ──
+    PREDICTION_HORIZON_BARS = 20        # 默认预测周期
+    SIGNAL_WEIGHTS = {
+        'ma_slope': 0.30,
+        'macd_histogram': 0.30,
+        'bollinger_width': 0.20,
+        'sr_distance': 0.20,
+    }
+    MULTI_TF_STRONG_THRESHOLD = 3
+    MULTI_TF_WEAK_THRESHOLD = 2
+    MULTI_TF_CONFLICT_MULTIPLIER = 0.5
+
+    # ── 缓存 ──
+    CACHE_TTL = 300
+    CACHE_DIR = 'data/.agent_cache'
+
+    # ── 图表 ──
+    CHART_DEFAULT_PERIOD = 'daily'
+    CHART_MAX_BARS_PLOTLY = 500
+    CHART_DOWNSAMPLE_METHOD = 'lttb'
+    CHART_LABELS = {
+        'price': '价格', 'volume': '成交量', 'rsi': 'RSI相对强弱',
+        'macd': 'MACD', 'kdj': 'KDJ随机指标',
+        'buy': '买入信号', 'sell': '卖出信号',
+        'turning_point': '关键拐点',
+        'support': '支撑位', 'resistance': '阻力位',
+    }
+
+    # ── 输出 ──
+    OUTPUT_DIR = 'output'
+
+
 class TechnicalConfig:
     MA_PERIODS = [5, 20, 50, 200]
     RSI_PERIOD = 14

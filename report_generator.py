@@ -29,7 +29,9 @@ class ReportGenerator:
     
     def generate_report(self, stock_data: Dict[str, Any], graham_result: Dict[str, Any], buffett_result: Dict[str, Any],
                         lynch_result: Dict[str, Any], munger_result: Dict[str, Any], dalio_result: Dict[str, Any],
-                        technical_result: Dict[str, Any], ai_result: Dict[str, Any], market_regime: Dict[str, Any] = None) -> str:
+                        technical_result: Dict[str, Any], ai_result: Dict[str, Any],
+                        market_regime: Dict[str, Any] = None,
+                        trend_result: Dict[str, Any] = None) -> str:
         try:
             stock_info = stock_data.get('info', {})
             stock_name = stock_info.get('stock_name', '未知股票')
@@ -38,7 +40,7 @@ class ReportGenerator:
             report_content = self._generate_text_report(
                 stock_name, stock_code, stock_data,
                 graham_result, buffett_result, lynch_result, munger_result, dalio_result,
-                technical_result, ai_result, market_regime
+                technical_result, ai_result, market_regime, trend_result
             )
             
             report_path = os.path.join(self.output_dir, f'{stock_code}_{stock_name}_价值投资分析报告.md')
@@ -424,7 +426,8 @@ class ReportGenerator:
                            graham_result: Dict[str, Any], buffett_result: Dict[str, Any],
                            lynch_result: Dict[str, Any], munger_result: Dict[str, Any],
                            dalio_result: Dict[str, Any], technical_result: Dict[str, Any],
-                           ai_result: Dict[str, Any], market_regime: Dict[str, Any] = None) -> str:
+                           ai_result: Dict[str, Any], market_regime: Dict[str, Any] = None,
+                           trend_result: Dict[str, Any] = None) -> str:
         report = []
         
         report.append(f"# {stock_name}（{stock_code}）分析报告")
@@ -453,8 +456,9 @@ class ReportGenerator:
         self._append_dalio_analysis(report, dalio_result, safe_format)
         self._append_technical_analysis(report, technical_result, safe_format)
         self._append_ai_analysis(report, ai_result)
+        self._append_trend_analysis(report, trend_result)
 
-        report.append("\n## 11. 投资总结")
+        report.append("\n## 12. 投资总结")
         report.append("=" * 80)
         
         summary_parts = self._generate_comprehensive_summary(
@@ -1179,7 +1183,86 @@ class ReportGenerator:
                     report.append(ai_result.get(section, '无'))
         else:
             report.append("- 无数据")
-    
+
+    def _append_trend_analysis(self, report: list, trend_result: Dict[str, Any] = None):
+        """在报告中追加趋势分析章节。"""
+        if not trend_result or 'error' in trend_result:
+            return
+
+        report.append("\n## 11. 趋势分析")
+        report.append("")
+
+        summary = trend_result.get('trend_summary', {})
+        report.append(f"- **当前趋势**: {summary.get('direction', '未知')}")
+        report.append(f"- **趋势强度**: {summary.get('strength', '未知')}")
+        report.append(f"- **综合评分**: {summary.get('score', 'N/A')}/100")
+        report.append(f"- **市场状态**: {summary.get('regime', '未知')}")
+
+        # 多周期信号
+        mtf = trend_result.get('multi_timeframe', {})
+        alignment = mtf.get('alignment', {})
+        if alignment:
+            report.append("")
+            report.append("### 多周期信号对齐")
+            report.append("")
+            report.append(f"- 日K方向: {alignment.get('daily', '-')}")
+            report.append(f"- 周K方向: {alignment.get('weekly', '-')}")
+            report.append(f"- 月K方向: {alignment.get('monthly', '-')}")
+            report.append(f"- 共振强度: {alignment.get('signal_strength', 'unknown')}")
+            report.append(f"- 同向周期数: {alignment.get('consensus_count', 0)}/3")
+
+        # 拐点
+        tps = trend_result.get('turning_points', [])
+        if tps:
+            report.append("")
+            report.append("### 关键趋势转折点")
+            report.append("")
+            report.append("| 日期 | 类型 | 价格 | 置信度 |")
+            report.append("|------|------|------|--------|")
+            for tp in tps[:5]:
+                tp_type_map = {
+                    'major_top': '主要顶部', 'major_bottom': '主要底部',
+                    'minor_top': '次要顶部', 'minor_bottom': '次要底部',
+                }
+                tp_type_cn = tp_type_map.get(tp.get('type', ''), tp.get('type', ''))
+                report.append(
+                    f"| {tp['date']} | {tp_type_cn} "
+                    f"| {tp['price']} | {tp.get('confidence_score', 0)} |"
+                )
+
+        # 趋势预测
+        pred = trend_result.get('prediction', {})
+        if pred and pred.get('direction'):
+            report.append("")
+            report.append("### 趋势预测")
+            report.append(f"- **方向**: {pred.get('direction', '未知')}")
+            report.append(f"- **置信度**: {pred.get('confidence_score', 0)}")
+            if pred.get('target_lower') and pred.get('target_upper'):
+                report.append(f"- **目标区间**: {pred['target_lower']} - {pred['target_upper']}")
+            report.append(f"- **预测依据**: {pred.get('reason', '')}")
+
+        # 买卖信号
+        signals = trend_result.get('signals', {})
+        if signals:
+            report.append("")
+            report.append("### 买卖信号汇总")
+            composite_map = {
+                'strong_buy': '🔴 强烈买入', 'buy': '🟢 建议买入',
+                'neutral': '🟡 持有观望',
+                'sell': '🟠 建议卖出', 'strong_sell': '🔴 强烈卖出',
+            }
+            report.append(f"- **综合信号**: {composite_map.get(signals.get('composite', ''), signals.get('composite', '中性'))}")
+            for detail in signals.get('details', []):
+                signal_map = {1: '↑', -1: '↓', 0: '→'}
+                mark = signal_map.get(detail.get('signal', 0), '→')
+                report.append(f"  - {detail.get('indicator', '')} {mark}: {detail.get('description', '')}")
+
+        # 图表引用
+        chart_path = trend_result.get('chart_path', '')
+        if chart_path and os.path.exists(chart_path):
+            rel_path = os.path.relpath(chart_path, self.output_dir)
+            report.append(f"\n![趋势分析图表]({rel_path})")
+
     def _generate_charts(self, stock_data: Dict[str, Any], technical_result: Dict[str, Any]) -> Optional[str]:
         try:
             historical_data = stock_data.get('historical')

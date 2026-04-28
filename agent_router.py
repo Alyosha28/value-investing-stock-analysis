@@ -424,6 +424,9 @@ class AgentRouter:
                  'trigger_keywords': ['风险', '止损', '回撤'],
                  'trigger_patterns': [r'.*风险.*', r'.*止损.*'],
                  'co_trigger': True},
+                {'priority': 8, 'agent': '趋势分析师',
+                 'trigger_keywords': ['趋势', 'K线', '拐点', '转折', '技术图表', '走势'],
+                 'trigger_patterns': [r'.*趋势分.*', r'.*K线.*', r'.*走势分.*']},
             ],
             'multi_agent_scenarios': [
                 {'name': '完整个股分析', 'agents': ['数据分析师', '价值分析师', '技术分析师', '风控官'],
@@ -443,6 +446,7 @@ class AgentRouter:
             '行业分析师': 'industry',
             '财报解读专家': 'financial_report',
             '风控官': 'risk',
+            '趋势分析师': 'trend',
         }
 
         self._default_agent = agent_name_to_type.get(

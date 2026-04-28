@@ -436,6 +436,93 @@ class DataHub:
             logger.warning(f"[DataHub] 指数快照获取失败: {e}")
         return {}
 
+    def get_stock_kline(self, stock_code: str, period: str = 'daily',
+                         start_date: str = None, end_date: str = None,
+                         limit: int = 1000):
+        """
+        获取个股OHLCV K线数据，支持日/周/月周期。四级回退。
+
+        period: 'daily'(klt=101) | 'weekly'(klt=102) | 'monthly'(klt=103)
+        limit: 最大K线数量（默认1000）
+        """
+        import pandas as pd
+        klt_map = {'daily': 101, 'weekly': 102, 'monthly': 103}
+        klt = klt_map.get(period, 101)
+
+        cache_key = f"kline_{stock_code}_{period}"
+        if not self._tracker.should_proceed(cache_key, 'eastmoney', 'get_kline'):
+            cached = self._source_cache.get(cache_key, 'eastmoney')
+            if cached is not None:
+                return self._apply_date_filter(cached, start_date, end_date)
+
+        from backup_data_fetcher import BackupDataFetcher
+        bf = BackupDataFetcher()
+
+        # 第1层：东方财富原生周期数据
+        df = bf.get_kline_from_eastmoney(stock_code, klt=klt, limit=limit)
+        if df is not None and not df.empty:
+            self._source_cache.set(cache_key, 'eastmoney', df)
+            return self._apply_date_filter(df, start_date, end_date)
+
+        # 第2层：东方财富日K + 聚合回退
+        if period != 'daily':
+            daily_df = bf.get_kline_from_eastmoney(stock_code, klt=101, limit=limit * 5)
+            if daily_df is not None and not daily_df.empty:
+                try:
+                    from trend_analyzer import TimeFrameAggregator
+                    agg = TimeFrameAggregator()
+                    df = agg.aggregate(daily_df, period)
+                    if df is not None:
+                        self._source_cache.set(cache_key, 'eastmoney', df)
+                        return self._apply_date_filter(df, start_date, end_date)
+                except Exception:
+                    pass
+
+        # 第3层：Tushare Pro
+        if df is None:
+            try:
+                from tushare_pro_data_fetcher import TushareProDataFetcher
+                tsf = TushareProDataFetcher()
+                ts_data = tsf.get_stock_data(stock_code)
+                ts_hist = ts_data.get('historical') if ts_data else None
+                if ts_hist is not None and not ts_hist.empty:
+                    df = ts_hist if period == 'daily' else TimeFrameAggregator().aggregate(ts_hist, period)
+                    if df is not None:
+                        return self._apply_date_filter(df, start_date, end_date)
+            except Exception:
+                pass
+
+        # 第4层：Akshare
+        if df is None:
+            try:
+                from akshare_data_fetcher import AkshareDataFetcher
+                akf = AkshareDataFetcher()
+                ak_data = akf.get_stock_data(stock_code)
+                ak_hist = ak_data.get('historical') if ak_data else None
+                if ak_hist is not None and not ak_hist.empty:
+                    df = ak_hist if period == 'daily' else TimeFrameAggregator().aggregate(ak_hist, period)
+                    if df is not None:
+                        return self._apply_date_filter(df, start_date, end_date)
+            except Exception:
+                pass
+
+        return None
+
+    def _apply_date_filter(self, df, start_date: str = None,
+                           end_date: str = None):
+        """对K线DataFrame应用时间过滤。"""
+        if df is None or df.empty:
+            return df
+        try:
+            import pandas as pd
+            if start_date:
+                df = df[df.index >= pd.Timestamp(start_date)]
+            if end_date:
+                df = df[df.index <= pd.Timestamp(end_date)]
+        except Exception:
+            pass
+        return df
+
     def close(self):
         if self._fetcher:
             self._fetcher.close()

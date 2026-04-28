@@ -231,7 +231,7 @@ def main():
     parser.add_argument('--export-csv', type=str, default=None, help='将筛选结果导出到指定CSV路径')
     parser.add_argument('--notify', '-n', action='store_true', help='分析完成后推送通知（飞书/邮箱）')
     parser.add_argument('--agent', '-a', type=str, default=None,
-                      choices=['data', 'value', 'technical', 'macro', 'risk', 'industry', 'financial_report', 'full', 'decision'],
+                      choices=['data', 'value', 'technical', 'macro', 'risk', 'industry', 'financial_report', 'trend', 'full', 'decision'],
                       help='指定Agent类型进行路由分析')
     parser.add_argument('--query', '-q', type=str, default=None,
                       help='自然语言查询，Agent路由器将自动匹配最合适的Agent')
@@ -239,6 +239,16 @@ def main():
                       help='Agent模式输出格式: text (默认) 或 json')
     parser.add_argument('--no-cache', action='store_true', help='Agent模式禁用缓存')
     parser.add_argument('--list-agents', action='store_true', help='列出所有可用Agent')
+    parser.add_argument('--trend', '-t', action='store_true', help='执行详细趋势分析')
+    parser.add_argument('--period', type=str, default='daily',
+                        choices=['daily', 'weekly', 'monthly'],
+                        help='K线周期: daily(日K), weekly(周K), monthly(月K)')
+    parser.add_argument('--start', type=str, default=None,
+                        help='分析起始日期 (YYYY-MM-DD)')
+    parser.add_argument('--end', type=str, default=None,
+                        help='分析结束日期 (YYYY-MM-DD)')
+    parser.add_argument('--interactive', action='store_true',
+                        help='生成交互式HTML图表（需安装plotly）')
 
     args = parser.parse_args()
 
@@ -262,6 +272,52 @@ def main():
             print(f"\n  [{name}]")
             print(f"    参与Agent: {', '.join(scenario['agents'])}")
             print(f"    执行模式: {scenario['execution_order']}")
+        return
+
+    if args.trend:
+        from trend_analyzer import TrendAnalyzer
+        ta = TrendAnalyzer()
+        stock_code = args.stock_codes[0] if args.stock_codes else DataConfig.DEFAULT_STOCK_POOL[0]
+        result = ta.analyze(stock_code=stock_code, period=args.period,
+                            start_date=args.start, end_date=args.end,
+                            output_format='html' if args.interactive else 'png')
+
+        if 'error' in result:
+            print(f"\n❌ 趋势分析失败: {result['error']}")
+            return
+
+        print(f"\n{'='*60}")
+        print(f"📈 趋势分析完成: {result.get('stock_name', stock_code)} ({stock_code})")
+        print(f"{'='*60}")
+        summary = result.get('trend_summary', {})
+        print(f"  当前趋势: {summary.get('direction', '未知')}  "
+              f"(强度: {summary.get('strength', '未知')}, 评分: {summary.get('score', 0)})")
+        print(f"  市场状态: {summary.get('regime', '未知')}")
+
+        mtf = result.get('multi_timeframe', {})
+        alignment = mtf.get('alignment', {})
+        if alignment:
+            print(f"  多周期信号: 日K={alignment.get('daily', '-')} "
+                  f"周K={alignment.get('weekly', '-')} 月K={alignment.get('monthly', '-')}")
+            print(f"  共振强度: {alignment.get('signal_strength', 'unknown')}")
+
+        tps = result.get('turning_points', [])
+        if tps:
+            for tp in tps[:3]:
+                print(f"  📍 拐点: {tp['date']} {tp['type']} @ {tp['price']} (置信度:{tp.get('confidence_score', 0)})")
+
+        pred = result.get('prediction', {})
+        if pred:
+            print(f"  趋势预测: {pred.get('direction', '未知')}  "
+                  f"(置信度:{pred.get('confidence_score', 0)}, "
+                  f"区间:{pred.get('target_lower', 0)}-{pred.get('target_upper', 0)})")
+
+        sig = result.get('signals', {})
+        if sig:
+            print(f"  综合信号: {sig.get('composite', 'neutral')}")
+
+        print(f"\n📊 图表已保存: {result.get('chart_path', 'N/A')}")
+        print(f"{'='*60}\n")
         return
 
     if args.agent or args.query:
